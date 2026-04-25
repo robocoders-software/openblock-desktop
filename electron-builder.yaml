@@ -1,0 +1,77 @@
+directories:
+  buildResources: buildResources
+  output: dist
+extraFiles: ['LICENSE', 'LICENSE.ScratchFoundation', 'TRADEMARK', "tools", "external-resources", 'firmwares', "drivers"]
+
+appId: RoboCoders-studio.cc.RoboCoders-studio-desktop
+productName: "RoboCoders-studio-Desktop"
+publish:
+  - provider: github
+artifactName: "RoboCoders-studio-Desktop_v${version}_${os}_${arch}.${ext}"
+
+fileAssociations:
+  ext: ob
+  name: RoboCoders-studio project file
+  role: Editor
+  icon: buildResources/OpenBlockFile.ico
+
+compression: maximum
+
+mac:
+  category: public.app-category.education
+  entitlements: buildResources/entitlements.mac.plist
+  extendInfo:
+    NSCameraUsageDescription: >-
+        This app requires camera access when using the video sensing blocks.
+    NSMicrophoneUsageDescription: >-
+        This app requires microphone access when recording sounds or detecting loudness.
+  gatekeeperAssess: true
+  hardenedRuntime: true
+  icon: buildResources/OpenBlockDesktop.icns
+  provisioningProfile: embedded.provisionprofile
+  target:
+    - dmg
+    # - mas
+dmg:
+  title: "RoboCoders-studio-Desktop_${version}"
+  format: UDRO
+# mas:
+#   category: public.app-category.education
+#   entitlements: buildResources/entitlements.mas.plist
+#   entitlementsInherit: buildResources/entitlements.mas.inherit.plist
+#   hardenedRuntime: false
+#   icon: buildResources/OpenBlockDesktop.icns
+# masDev:
+#   type: development
+#   provisioningProfile: mas-dev.provisionprofile
+
+win:
+  icon: buildResources/OpenBlockDesktop.ico
+  target:
+    # - appx
+    - nsis
+# appx:
+#   identityName: "OpenblockTeam.OpenblockDesktop
+#   publisherDisplayName: "OpenBlock Team"
+#   publisher: "CN=2EC43DF1-469A-4119-9AB9-568A0A1FF65F"
+nsis:
+  oneClick: false # allow user to choose per-user or per-machine
+  allowToChangeInstallationDirectory: true
+  include: buildResources/installer.nsh
+  buildUniversalInstaller: false
+#   license: LICENSE
+
+linux:
+  category: Education
+  icon: buildResources/linux
+  desktop:
+    entry:
+      Encoding: UTF-8
+      Name: RoboCoders-studio-Desktop
+      Icon: openblock-desktop
+      Type: Application
+      Terminal: false
+  target:
+    - deb
+deb:
+  depends: ["libnotify4", "libxtst6", "libnss3"]

@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Node/Electron
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+out/
+release/
+
+# Generated/runtime assets
+external-resources/
+drivers/
+firmwares/
+tools/
+translations/
+tmp/
+static/
+
+# IDE
+.idea/
+.vscode/
