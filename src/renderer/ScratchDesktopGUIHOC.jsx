@@ -29,7 +29,7 @@ import {setDeviceData} from 'openblock-gui/src/reducers/device-data';
 
 import analytics, {initialAnalytics} from 'openblock-gui/src/lib/analytics';
 import MessageBoxType from 'openblock-gui/src/lib/message-box.js';
-import {makeDeviceLibrary} from 'openblock-gui/src//lib/libraries/devices/index.jsx';
+import {makeDeviceLibrary} from 'openblock-gui/src/lib/libraries/devices/index.jsx';
 
 import ElectronStorageHelper from '../common/ElectronStorageHelper';
 
@@ -45,6 +45,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         constructor (props) {
             super(props);
             bindAll(this, [
+                'handleClickLogo',
                 'handleProjectTelemetryEvent',
                 'handleSetTitleFromSave',
                 'handleShowMessageBox',
@@ -115,6 +116,9 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         componentWillUnmount () {
             ipcRenderer.removeListener('setTitleFromSave', this.handleSetTitleFromSave);
         }
+        handleClickLogo () {
+            ipcRenderer.send('open-about-window');
+        }
         handleClickAbout () {
             ipcRenderer.send('open-about-window');
         }
@@ -144,6 +148,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         }
         handleStorageInit (storageInstance) {
             storageInstance.addHelper(new ElectronStorageHelper(storageInstance));
+            storageInstance.addOfficialScratchWebStores();
         }
         handleUpdateProjectTitle (newTitle) {
             this.setState({projectTitle: newTitle});
@@ -183,6 +188,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
 
             return (<WrappedComponent
                 canEditTitle
+                canChangeLanguage={false}
                 canModifyCloudData={false}
                 canSave={false}
                 isScratchDesktop

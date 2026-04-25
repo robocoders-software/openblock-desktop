@@ -24,7 +24,7 @@ const saveFilters = {
         extensions: ['sb3']
     },
     OB: {
-        name: 'OpenBlock Project',
+        name: 'RoboCoders Studio Project',
         extensions: ['ob']
     },
     Sprite2: {
@@ -63,7 +63,7 @@ const loadFilters = {
         ]
     },
     AllProjects: {
-        name: 'All OpenBlock Projects',
+        name: 'All RoboCoders Studio Projects',
         extensions: [
             ...saveFilters.SB3.extensions,
             ...saveFilters.SB2.extensions,

@@ -14,7 +14,7 @@ const PrivacyElement = () => (
                 href="https://wiki.openblock.cc/zh/download-software/"
                 target="_blank"
                 rel="noopener noreferrer"
-            >OpenBlock App</a>&rdquo;), how we use, process, and share it, and what we&apos;re doing to keep it safe. It
+            >RoboCoders Studio App</a>&rdquo;), how we use, process, and share it, and what we&apos;re doing to keep it safe. It
             also tells you about your rights and choices with respect to your Personal Information, and how you can <a
                 href="https://www.openblock.cc/contact-us/"
                 target="_blank"

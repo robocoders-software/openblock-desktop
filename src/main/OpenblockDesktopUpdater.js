@@ -17,7 +17,7 @@ class OpenblockDesktopUpdater {
         autoUpdater.autoDownload = false;
 
         const appPath = app.getAppPath();
-        if (appPath.search(/main/g) !== -1) {
+        if (app.isPackaged) {
             autoUpdater.logger = log;
             autoUpdater.logger.transports.file.level = 'info';
             autoUpdater.updateConfigPath = path.join(appPath, '../win-unpacked/resources/app-update.yml');
@@ -63,6 +63,8 @@ class OpenblockDesktopUpdater {
     }
 
     checkUpdateAtStartup () {
+        if (!app.isPackaged) return;
+
         autoUpdater.on('error', err => {
             this.removeAllAutoUpdaterListeners();
             console.warn(`Error while checking for application update: ${err}`);
