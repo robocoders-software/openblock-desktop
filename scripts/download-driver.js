@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-const user = 'robocoders-software';
+const user = 'openblockcc';
 const repo = 'openblock-driver';
 const outputdir = path.join(__dirname, '../drivers');
 const leaveZipped = false;

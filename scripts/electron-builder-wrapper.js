@@ -47,7 +47,12 @@ const getPlatformFlag = function () {
 const runBuilder = function (wrapperConfig, target) {
     // the AppX build fails if CSC_* or WIN_CSC_* variables are set
     const shouldStripCSC = (target.name.indexOf('appx') === 0) || (!wrapperConfig.doSign);
-    const childEnvironment = shouldStripCSC ? stripCSC(process.env) : process.env;
+    let childEnvironment = shouldStripCSC ? stripCSC(process.env) : process.env;
+    if (!wrapperConfig.doSign) {
+        // Prevent electron-builder from auto-discovering system certificates when signing is disabled.
+        // Without this, it finds a cert and then fails at the ia32 NSIS uninstaller signing step.
+        childEnvironment = Object.assign({}, childEnvironment, {CSC_IDENTITY_AUTO_DISCOVERY: 'false'});
+    }
     if (wrapperConfig.doSign &&
         (target.name.indexOf('nsis') === 0) &&
         !(childEnvironment.CSC_LINK || childEnvironment.WIN_CSC_LINK)) {
@@ -68,7 +73,7 @@ const runBuilder = function (wrapperConfig, target) {
         }
     }
     if (target.platform === 'win32' && wrapperConfig.mode !== 'dev') {
-        allArgs.push('--ia32', '--x64');
+        allArgs.push('--x64');
     }
     if (!wrapperConfig.doPackage) {
         allArgs.push('--dir', '--c.compression=store');

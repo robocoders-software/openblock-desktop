@@ -1,0 +1,19 @@
+diff --git a/node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js b/node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js
+index 8336c60..9f44a4e 100644
+--- a/node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js
++++ b/node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js
+@@ -355,7 +355,13 @@ class NsisTarget extends core_1.Target {
+             }
+         }
+         else {
+-            await (0, wine_1.execWine)(installerPath, null, [], { env: { __COMPAT_LAYER: "RunAsInvoker" } });
++            try {
++                await nsisUtil_1.UninstallerReader.exec(installerPath, uninstallerPath);
++            }
++            catch (readerError) {
++                builder_util_1.log.warn({ error: readerError.message }, "UninstallerReader failed, trying execWine");
++                await (0, wine_1.execWine)(installerPath, null, [], { env: { __COMPAT_LAYER: "RunAsInvoker" } });
++            }
+         }
+         await packager.sign(uninstallerPath);
+         delete defines.BUILD_UNINSTALLER;

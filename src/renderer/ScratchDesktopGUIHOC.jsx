@@ -148,6 +148,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         }
         handleStorageInit (storageInstance) {
             storageInstance.addHelper(new ElectronStorageHelper(storageInstance));
+            storageInstance.setAssetHost('https://robocoders-software.github.io/openblock-assets');
             storageInstance.addOfficialScratchWebStores();
         }
         handleUpdateProjectTitle (newTitle) {
