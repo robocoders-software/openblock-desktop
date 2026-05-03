@@ -37,9 +37,7 @@ const makeConfig = function (defaultConfig, options) {
     const sourceFileTest = options.useReact ? /\.jsx?$/ : /\.js$/;
     if (options.useReact) {
         babelOptions.presets = babelOptions.presets.concat('@babel/preset-react');
-        babelOptions.plugins.push(['react-intl', {
-            messagesDir: './translations/messages/'
-        }]);
+        babelOptions.plugins.push('react-intl');
     }
 
     // TODO: consider adjusting these rules instead of discarding them in at least some cases
@@ -59,6 +57,15 @@ const makeConfig = function (defaultConfig, options) {
             console.log(`${options.name}: ${statusWord} electron-webpack default rule for ${rule.test}`);
             return !shouldDisable;
         });
+    }
+
+    // Local file:-linked packages are externalized by electron-webpack because they appear in
+    // package.json dependencies, but they contain ES module source that must be bundled and
+    // transpiled by babel. Remove them from the externals list so webpack processes them.
+    if (Array.isArray(defaultConfig.externals)) {
+        defaultConfig.externals = defaultConfig.externals.filter(
+            ext => typeof ext !== 'string' || !/^openblock-/.test(ext)
+        );
     }
 
     const config = merge.smart(defaultConfig, {
@@ -135,9 +142,19 @@ const makeConfig = function (defaultConfig, options) {
             cacheWithContext: false,
             symlinks: false,
             alias: {
-                // act like scratch-gui has this line in its package.json:
-                //   "browser": "./src/index.js"
-                'openblock-gui$': path.resolve(__dirname, 'node_modules', 'openblock-gui', 'src', 'index.js')
+                // Use real (non-junction) paths so Windows junctions don't hide files from
+                // babel-loader include checks. Each local package needs its own alias pair.
+                'openblock-gui$': path.resolve(__dirname, '../openblock-gui/src/index.js'),
+                'openblock-gui/src': path.resolve(__dirname, '../openblock-gui/src'),
+                'openblock-ml-studio$': path.resolve(__dirname, '../openblock-ml-studio/src/index.js'),
+                'openblock-ml-studio/src': path.resolve(__dirname, '../openblock-ml-studio/src'),
+                // Use local VM source so teachableMachine extension and all VM changes are live
+                'openblock-vm$': path.resolve(__dirname, '../openblock-vm/src/index.js'),
+                'openblock-vm/src': path.resolve(__dirname, '../openblock-vm/src'),
+                // Force all packages (including openblock-gui which has its own node_modules/react)
+                // to use the same single React copy so hooks work correctly.
+                'react': path.resolve(__dirname, 'node_modules/react'),
+                'react-dom': path.resolve(__dirname, 'node_modules/react-dom')
             }
         }
     });

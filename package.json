@@ -32,6 +32,7 @@
   "dependencies": {
     "bytes": "^3.1.2",
     "openblock-link": "^0.2.0-prerelease.20250608112023",
+    "openblock-ml-studio": "file:../openblock-ml-studio",
     "openblock-resource": "^0.2.0-prerelease.20250302101433",
     "source-map-support": "^0.5.19"
   },

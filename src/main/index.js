@@ -231,7 +231,8 @@ const createWindow = ({search = null, url = 'index.html', ...browserWindowOption
         show: false,
         webPreferences: {
             contextIsolation: false,
-            nodeIntegration: true
+            nodeIntegration: true,
+            webSecurity: false
         },
         ...browserWindowOptions
     });
@@ -533,12 +534,16 @@ app.on('ready', () => {
             for (const extension of extensionsToInstall) {
                 // WARNING: depending on a lot of things including the version of Electron `installExtension` might
                 // return a promise that never resolves, especially if the extension is already installed.
-                installExtension(extension).then(
-                    extensionName => log(`Installed dev extension: ${extensionName}`),
-                    errorMessage => log.error(`Error installing dev extension: ${errorMessage}`)
-                );
+                try {
+                    installExtension(extension).then(
+                        extensionName => log(`Installed dev extension: ${extensionName}`),
+                        errorMessage => log.error(`Error installing dev extension: ${errorMessage}`)
+                    ).catch(err => log.error(`Dev extension install failed: ${err}`));
+                } catch (err) {
+                    log.error(`Dev extension install threw: ${err}`);
+                }
             }
-        });
+        }).catch(err => log.error(`Failed to load electron-devtools-installer: ${err}`));
     }
 
     ipcMain.on('clearCache', () => {
