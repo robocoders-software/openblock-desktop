@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"jsx|js$\")",
+      "Bash(xargs grep *)",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(timeout 30 npm start)",
+      "Bash(timeout 120 npm start)",
+      "Bash(timeout 90 npm start)",
+      "Bash(xargs sed *)",
+      "Bash(sed -i 's/#4C97FF/##MP##/g; s/#9966FF/##LP##/g; s/#4280D7/##MS##/g; s/#855CD6/##LS##/g; s/#3373CC/##MT##/g; s/#774DCB/##LT##/g' openblock-vm.js)",
+      "Bash(sed -i 's/##MP##/#9966FF/g; s/##LP##/#4C97FF/g; s/##MS##/#7040C0/g; s/##LS##/#4280D7/g; s/##MT##/#774DCB/g; s/##LT##/#3373CC/g' openblock-vm.js)",
+      "Bash(cp openblock-gui/node_modules/openblock-blocks/blockly_compressed_vertical.js openblock-blocks/)",
+      "Bash(cp openblock-gui/node_modules/openblock-blocks/blockly_compressed_horizontal.js openblock-blocks/)",
+      "Bash(cp openblock-gui/node_modules/openblock-blocks/blockly_uncompressed_vertical.js openblock-blocks/)",
+      "Bash(cp openblock-gui/node_modules/openblock-blocks/blockly_uncompressed_horizontal.js openblock-blocks/)",
+      "Bash(cp openblock-gui/node_modules/openblock-blocks/blocks_compressed.js openblock-blocks/)",
+      "Bash(mkdir -p openblock-vm/dist/web openblock-vm/dist/node)",
+      "Bash(cp openblock-gui/node_modules/openblock-vm/dist/web/openblock-vm.js openblock-vm/dist/web/)",
+      "Bash(cp openblock-gui/node_modules/openblock-vm/dist/web/openblock-vm.min.js openblock-vm/dist/web/)",
+      "Bash(cp openblock-gui/node_modules/openblock-vm/dist/node/openblock-vm.js openblock-vm/dist/node/)",
+      "Bash(npm install *)",
+      "Bash(npm start *)",
+      "Bash(echo \"Started PID: $!\")",
+      "Bash(jobs -l)",
+      "Bash(echo \"PID: $!\")",
+      "Read(//tmp/**)",
+      "Bash(pkill -f \"electron-webpack\")",
+      "Bash(pkill -f \"npm start\")",
+      "Bash(grep -E \"^react$|^prop-types$|^regenerator-runtime$\")",
+      "Bash(pkill -f \"electron-webpack\\\\|electron\\\\.exe\\\\|Electron\")",
+      "Bash(node -e \"const https = require\\('https'\\); const req = https.get\\('https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json', res => { console.log\\('STATUS:', res.statusCode\\); res.destroy\\(\\); }\\); req.on\\('error', e => console.error\\('ERROR:', e.message\\)\\); req.setTimeout\\(10000, \\(\\) => { req.destroy\\(\\); console.log\\('TIMEOUT'\\); }\\);\")",
+      "Bash(node scripts/download-mobilenet.js)",
+      "Bash(node -e \"const pkg = require\\('./package.json'\\); console.log\\('deps:', Object.keys\\(pkg.dependencies\\).filter\\(k => k.includes\\('ml'\\)\\)\\); console.log\\('all local deps:', Object.entries\\(pkg.dependencies\\).filter\\(\\([k,v]\\) => v.startsWith\\('file:'\\)\\).map\\(\\([k,v]\\) => k+' → '+v\\)\\);\")",
+      "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\)\\); const deps={...d.dependencies,...d.devDependencies}; Object.entries\\(deps\\).filter\\(\\([k,v]\\)=>v.includes\\('file:'\\)||k.includes\\('ml'\\)\\).forEach\\(\\([k,v]\\)=>console.log\\(k,'→',v\\)\\);\")"
+    ]
+  }
+}

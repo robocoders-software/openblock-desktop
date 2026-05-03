@@ -31,7 +31,11 @@ module.exports = defaultConfig =>
                 /node_modules[\\/]+scratch-[^\\/]+[\\/]+src/,
                 /node_modules[\\/]+openblock-[^\\/]+[\\/]+src/,
                 /node_modules[\\/]+pify/,
-                /node_modules[\\/]+@vernier[\\/]+godirect/
+                /node_modules[\\/]+@vernier[\\/]+godirect/,
+                path.resolve(__dirname, '../openblock-vm/src'),
+                // Windows junctions resolve to real paths; include those too so babel transpiles them
+                path.resolve(__dirname, '../openblock-gui/src'),
+                path.resolve(__dirname, '../openblock-ml-studio/src')
             ],
             plugins: [
                 new CopyWebpackPlugin([{
