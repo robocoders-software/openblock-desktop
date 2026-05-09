@@ -23,12 +23,44 @@ import {
     app,
     dialog,
     ipcMain,
+    protocol,
     shell,
     systemPreferences
 } from 'electron';
 
 const storage = new ElectronStore();
 let desktopLink;
+
+/* ── In-memory cache for pending ML data (set by renderer before save) ── */
+let _pendingMLData = null;
+
+/* Convert ArrayBuffer / Buffer to base64 string for ZIP storage */
+const _toB64 = ab => {
+    if (!ab) return null;
+    const buf = Buffer.isBuffer(ab) ? ab : Buffer.from(ab);
+    return buf.toString('base64');
+};
+
+/* Serialise mlData for embedding in ZIP: weightData → base64, everything else JSON-safe */
+const _serializeMLData = data => {
+    if (!data) return null;
+    return JSON.stringify({
+        ...data,
+        modelWeights:    undefined,
+        modelWeightsB64: _toB64(data.modelWeights) || null
+    });
+};
+
+/* Parse mlData from ZIP: base64 → Buffer (usable as ArrayBuffer on both sides) */
+const _deserializeMLData = jsonStr => {
+    if (!jsonStr) return null;
+    const obj = JSON.parse(jsonStr);
+    if (obj.modelWeightsB64) {
+        obj.modelWeights    = Buffer.from(obj.modelWeightsB64, 'base64');
+        obj.modelWeightsB64 = undefined;
+    }
+    return obj;
+};
 
 formatMessage.setup({translations: locales});
 
@@ -369,6 +401,19 @@ const createMainWindow = () => {
                         // The download was canceled or interrupted. Cancel the telemetry event and delete the file.
                         throw new Error(`save ${doneState}`); // "save cancelled" or "save interrupted"
                     }
+                    /* Inject pending ML data into the .ob ZIP before final move */
+                    if (isProjectSave && _pendingMLData) {
+                        try {
+                            const JSZip = require('jszip');
+                            const fileBuffer = await fs.readFile(tempPath);
+                            const zip = await JSZip.loadAsync(fileBuffer);
+                            zip.file('ml/data.json', _serializeMLData(_pendingMLData));
+                            const newBuffer = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
+                            await fs.writeFile(tempPath, newBuffer);
+                        } catch (mlErr) {
+                            log.warn('[main] ML data injection failed:', mlErr.message);
+                        }
+                    }
                     await fs.move(tempPath, userChosenPath, {overwrite: true});
                     if (isProjectSave) {
                         const newProjectTitle = path.basename(userChosenPath, extName);
@@ -519,10 +564,95 @@ if (process.platform === 'win32') {
     }
 }
 
+// Register custom protocol so TF.js can load local model files without an HTTP server.
+// Must be called before app is ready.
+protocol.registerSchemesAsPrivileged([{
+    scheme: 'robocoders-resource',
+    privileges: {standard: true, secure: true, supportFetchAPI: true, corsEnabled: true}
+}]);
+
 // create main BrowserWindow when electron is ready
 app.on('ready', () => {
     desktopLink = new DesktopLink();
+
+    // Serve external-resources/* via robocoders-resource:// — no HTTP server needed.
+    // Works offline, no port conflicts, files read directly from disk.
+    // Strip scheme manually: standard schemes parse "models" as hostname, dropping it from pathname.
+    protocol.registerFileProtocol('robocoders-resource', (request, callback) => {
+        const relative = request.url.replace(/^robocoders-resource:\/\//, '');
+        const filePath = path.join(desktopLink.appPath, 'external-resources', relative);
+        callback({path: filePath});
+    });
+
+    // Read any file from external-resources/ by relative path.
+    ipcMain.handle('read-external-resource', async (event, relativePath) => {
+        const fullPath = path.join(desktopLink.appPath, 'external-resources', relativePath);
+        const buffer = await fs.readFile(fullPath);
+        return buffer;
+    });
+
+    // Health-check the resource server and restart it if it has crashed.
+    // Called by ml-engine.js before loading the speech-commands model.
+    ipcMain.handle('ensure-resource-server', async () => {
+        await new Promise((resolve, reject) => {
+            const req = require('http').get('http://localhost:20112/', res => {
+                res.destroy();
+                resolve();
+            });
+            req.on('error', reject);
+            req.setTimeout(1500, () => { req.destroy(); reject(new Error('timeout')); });
+        }).catch(async () => {
+            log.warn('[main] Resource server not responding — restarting…');
+            await desktopLink.start();
+        });
+    });
+
     attachTelemetryIpcMain();
+
+    /* ── ML persistence IPC handlers ── */
+
+    /* Renderer caches ML data before a normal blocks save so will-download can inject it */
+    ipcMain.on('ml-set-pending-data', (event, mlData) => {
+        _pendingMLData = mlData;
+    });
+
+    /* Explicit ML save dialog — writes an .ob ZIP containing only ML data */
+    ipcMain.handle('ml-save-ob-file', async (event, mlData) => {
+        const projectName = (mlData && mlData.metadata && mlData.metadata.name) || 'ml-project';
+        const userPath = dialog.showSaveDialogSync(_windows.main, {
+            title: 'Save ML Project',
+            defaultPath: `${projectName}.ob`,
+            filters: [{name: 'OpenBlock Project', extensions: ['ob']}]
+        });
+        if (!userPath) return {success: false, canceled: true};
+        try {
+            const JSZip = require('jszip');
+            const zip = new JSZip();
+            zip.file('ml/data.json', _serializeMLData(mlData));
+            const buf = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
+            await fs.writeFile(userPath, buf);
+            return {success: true, path: userPath};
+        } catch (e) {
+            return {success: false, error: e.message};
+        }
+    });
+
+    /* Returns ML data extracted from the .ob file that was opened via command-line argument.
+       Called by ml-training-page / audio-training-page on mount. */
+    ipcMain.handle('ml-get-loaded-data', async () => {
+        if (argv._.length === 0) return null;
+        const projectPath = argv._[argv._.length - 1];
+        try {
+            const JSZip = require('jszip');
+            const fileBuffer = await fs.readFile(projectPath);
+            const zip = await JSZip.loadAsync(fileBuffer);
+            const mlFile = zip.file('ml/data.json');
+            if (!mlFile) return null;
+            return _deserializeMLData(await mlFile.async('text'));
+        } catch (_) {
+            return null;
+        }
+    });
 
     if (isDevelopment) {
         import('electron-devtools-installer').then(importedModule => {
