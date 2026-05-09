@@ -32,7 +32,15 @@
       "Bash(node -e \"const https = require\\('https'\\); const req = https.get\\('https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json', res => { console.log\\('STATUS:', res.statusCode\\); res.destroy\\(\\); }\\); req.on\\('error', e => console.error\\('ERROR:', e.message\\)\\); req.setTimeout\\(10000, \\(\\) => { req.destroy\\(\\); console.log\\('TIMEOUT'\\); }\\);\")",
       "Bash(node scripts/download-mobilenet.js)",
       "Bash(node -e \"const pkg = require\\('./package.json'\\); console.log\\('deps:', Object.keys\\(pkg.dependencies\\).filter\\(k => k.includes\\('ml'\\)\\)\\); console.log\\('all local deps:', Object.entries\\(pkg.dependencies\\).filter\\(\\([k,v]\\) => v.startsWith\\('file:'\\)\\).map\\(\\([k,v]\\) => k+' → '+v\\)\\);\")",
-      "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\)\\); const deps={...d.dependencies,...d.devDependencies}; Object.entries\\(deps\\).filter\\(\\([k,v]\\)=>v.includes\\('file:'\\)||k.includes\\('ml'\\)\\).forEach\\(\\([k,v]\\)=>console.log\\(k,'→',v\\)\\);\")"
+      "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\)\\); const deps={...d.dependencies,...d.devDependencies}; Object.entries\\(deps\\).filter\\(\\([k,v]\\)=>v.includes\\('file:'\\)||k.includes\\('ml'\\)\\).forEach\\(\\([k,v]\\)=>console.log\\(k,'→',v\\)\\);\")",
+      "Bash(dir \"C:\\\\Program Files\\\\PictoBlox\" /s)",
+      "Read(//c/Program Files/PictoBlox/**)",
+      "Bash(dir \"C:\\\\Program Files\\\\PictoBlox\")",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Users/**)",
+      "Bash(find /c/Users/*/AppData -name \"*.exe\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\('dependencies',{}\\), indent=2\\)\\)\")",
+      "Bash(python3 -c \"import json,sys;d=json.load\\(sys.stdin\\);print\\('Version:',d.get\\('version','?'\\)\\)\")"
     ]
   }
 }
