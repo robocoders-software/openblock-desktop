@@ -100,7 +100,7 @@ class OpenblockDesktopUpdater {
         }
     }
 
-    reqeustCheckUpdate (_windows) {
+    requestCheckUpdate (_windows) {
         autoUpdater.on('error', err => {
             this.removeAllAutoUpdaterListeners();
             if (err.message === 'net::ERR_INTERNET_DISCONNECTED') {
@@ -243,7 +243,7 @@ class OpenblockDesktopUpdater {
         }
     }
 
-    reqeustUpdate () {
+    requestUpdate () {
         if (this.updateTarget === UPDATE_TARGET.application) {
             this.cancellationToken = new CancellationToken();
             autoUpdater.downloadUpdate(this.cancellationToken);
