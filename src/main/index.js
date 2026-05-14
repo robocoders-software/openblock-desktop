@@ -31,36 +31,62 @@ import {
 const storage = new ElectronStore();
 let desktopLink;
 
-/* ── In-memory cache for pending ML data (set by renderer before save) ── */
-let _pendingMLData = null;
+/* ── ML filesystem root ── */
+const mlDir = projectId => path.join(app.getPath('userData'), 'ml-projects', projectId);
 
-/* Convert ArrayBuffer / Buffer to base64 string for ZIP storage */
-const _toB64 = ab => {
-    if (!ab) return null;
-    const buf = Buffer.isBuffer(ab) ? ab : Buffer.from(ab);
-    return buf.toString('base64');
-};
+/* Last .ob file path the renderer reported opening (for ml-get-loaded-data fallback). */
+let _lastOpenedFilePath = null;
 
-/* Serialise mlData for embedding in ZIP: weightData → base64, everything else JSON-safe */
-const _serializeMLData = data => {
-    if (!data) return null;
-    return JSON.stringify({
-        ...data,
-        modelWeights:    undefined,
-        modelWeightsB64: _toB64(data.modelWeights) || null
-    });
-};
+/* The currently active project file path — used for silent Save (no dialog). */
+let _currentProjectFilePath = null;
 
-/* Parse mlData from ZIP: base64 → Buffer (usable as ArrayBuffer on both sides) */
-const _deserializeMLData = jsonStr => {
-    if (!jsonStr) return null;
-    const obj = JSON.parse(jsonStr);
-    if (obj.modelWeightsB64) {
-        obj.modelWeights    = Buffer.from(obj.modelWeightsB64, 'base64');
-        obj.modelWeightsB64 = undefined;
+/* Recursively collect all file paths within dir, returning paths relative to base. */
+const walkDir = async (dir, base) => {
+    const results = [];
+    let items;
+    try { items = await fs.readdir(dir, {withFileTypes: true}); } catch (_) { return results; }
+    for (const item of items) {
+        const full = path.join(dir, item.name);
+        if (item.isDirectory()) {
+            results.push(...await walkDir(full, base));
+        } else {
+            results.push(path.relative(base, full).replace(/\\/g, '/'));
+        }
     }
-    return obj;
+    return results;
 };
+
+/* Bundle <projectDir>/** into a JSZip under the 'ml/' prefix. */
+const bundleMLDir = async (zip, projectId) => {
+    const base  = mlDir(projectId);
+    const files = await walkDir(base, base);
+    for (const rel of files) {
+        const abs = path.join(base, rel);
+        const buf = await fs.readFile(abs);
+        zip.file(`ml/${rel}`, buf);
+    }
+};
+
+/* Extract 'ml/*' entries from a JSZip to <projectDir>. Guards against path traversal. */
+const extractMLDir = async (zip, projectId) => {
+    const dest  = mlDir(projectId);
+    const files = Object.keys(zip.files).filter(k => k.startsWith('ml/') && !zip.files[k].dir);
+    for (const zipPath of files) {
+        const rel = zipPath.slice(3); // strip 'ml/'
+        // Reject paths that escape the destination directory (path traversal guard)
+        const abs = path.resolve(dest, rel);
+        if (!abs.startsWith(path.resolve(dest) + path.sep) && abs !== path.resolve(dest)) {
+            log.warn(`[main] Rejected unsafe zip path: ${zipPath}`);
+            continue;
+        }
+        await fs.ensureDir(path.dirname(abs));
+        const content = await zip.files[zipPath].async('nodebuffer');
+        await fs.writeFile(abs, content);
+    }
+};
+
+/* In-memory: projectId of the last trained/saved ML project (for will-download injection). */
+let _pendingMLProjectId = null;
 
 formatMessage.setup({translations: locales});
 
@@ -71,8 +97,8 @@ app.allowRendererProcessReuse = true;
 app.commandLine.appendSwitch('allow-insecure-localhost', 'true');
 
 // enable gpu and ignore gpu blacklist
-app.commandLine.hasSwitch('enable-gpu');
-app.commandLine.hasSwitch('ignore-gpu-blacklist');
+app.commandLine.appendSwitch('enable-gpu');
+app.commandLine.appendSwitch('ignore-gpu-blacklist');
 
 telemetry.appWasOpened();
 
@@ -342,7 +368,7 @@ const createLoadingWindow = () => {
         transparent: true,
         hasShadow: false,
         search: 'route=loading',
-        title: `Loding ${productName} ${version}`
+        title: `Loading ${productName} ${version}`
     });
 
     window.once('ready-to-show', () => {
@@ -401,21 +427,27 @@ const createMainWindow = () => {
                         // The download was canceled or interrupted. Cancel the telemetry event and delete the file.
                         throw new Error(`save ${doneState}`); // "save cancelled" or "save interrupted"
                     }
-                    /* Inject pending ML data into the .ob ZIP before final move */
-                    if (isProjectSave && _pendingMLData) {
+                    /* Inject ML filesystem directory into the .ob ZIP before final move.
+                       If bundling fails, abort the save so the user gets a complete file or nothing. */
+                    if (isProjectSave && _pendingMLProjectId) {
                         try {
-                            const JSZip = require('jszip');
+                            const JSZip      = require('jszip');
                             const fileBuffer = await fs.readFile(tempPath);
-                            const zip = await JSZip.loadAsync(fileBuffer);
-                            zip.file('ml/data.json', _serializeMLData(_pendingMLData));
-                            const newBuffer = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
+                            const zip        = await JSZip.loadAsync(fileBuffer);
+                            await bundleMLDir(zip, _pendingMLProjectId);
+                            const newBuffer  = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
                             await fs.writeFile(tempPath, newBuffer);
+                            _pendingMLProjectId = null; // clear only on success
                         } catch (mlErr) {
-                            log.warn('[main] ML data injection failed:', mlErr.message);
+                            log.error('[main] ML FS injection failed, aborting save:', mlErr.message);
+                            _pendingMLProjectId = null; // clear to prevent stale state on next save
+                            throw new Error(`ML data could not be bundled: ${mlErr.message}`);
                         }
                     }
                     await fs.move(tempPath, userChosenPath, {overwrite: true});
                     if (isProjectSave) {
+                        /* Track this path so Ctrl+S can overwrite without a dialog */
+                        _currentProjectFilePath = userChosenPath;
                         const newProjectTitle = path.basename(userChosenPath, extName);
                         webContents.send('setTitleFromSave', {title: newProjectTitle});
 
@@ -492,6 +524,14 @@ const createMainWindow = () => {
         }
     });
 
+    /* Update window title to show unsaved-changes indicator (• prefix when dirty) */
+    ipcMain.on('project-dirty-changed', (event, {dirty, title}) => {
+        if (window) {
+            const base = title || productName;
+            window.setTitle(dirty ? `• ${base}` : base);
+        }
+    });
+
     ipcMain.on('loading-completed', () => {
         if (!storage.has('userId')) {
             storage.set('userId', uuidv4());
@@ -501,15 +541,22 @@ const createMainWindow = () => {
 
         webContents.send('setPlatform', process.platform);
 
+        // If the app was launched by opening a project file, tell the renderer its title
+        // so the menu-bar title input and window title stay in sync from the first load.
+        if (_currentProjectFilePath) {
+            const title = path.basename(_currentProjectFilePath, path.extname(_currentProjectFilePath));
+            webContents.send('setTitleFromOpen', {title});
+        }
+
         update.checkUpdateAtStartup();
     });
 
-    ipcMain.on('reqeustCheckUpdate', () => {
-        update.reqeustCheckUpdate(_windows.main);
+    ipcMain.on('requestCheckUpdate', () => {
+        update.requestCheckUpdate(_windows.main);
     });
 
-    ipcMain.on('reqeustUpdate', () => {
-        update.reqeustUpdate()
+    ipcMain.on('requestUpdate', () => {
+        update.requestUpdate()
             .then(() => {
                 setTimeout(() => {
                     console.log(`INFO: App will restart after 3 seconds`);
@@ -586,9 +633,13 @@ app.on('ready', () => {
 
     // Read any file from external-resources/ by relative path.
     ipcMain.handle('read-external-resource', async (event, relativePath) => {
-        const fullPath = path.join(desktopLink.appPath, 'external-resources', relativePath);
-        const buffer = await fs.readFile(fullPath);
-        return buffer;
+        try {
+            const fullPath = path.join(desktopLink.appPath, 'external-resources', relativePath);
+            return await fs.readFile(fullPath);
+        } catch (e) {
+            log.error(`[main] read-external-resource failed for "${relativePath}":`, e.message);
+            return null;
+        }
     });
 
     // Health-check the resource server and restart it if it has crashed.
@@ -609,26 +660,83 @@ app.on('ready', () => {
 
     attachTelemetryIpcMain();
 
-    /* ── ML persistence IPC handlers ── */
+    /* ══════════════════════════════════════════════════════════════
+       ML filesystem IPC handlers
+       All ML project data lives in:
+         <userData>/ml-projects/<projectId>/
+       ══════════════════════════════════════════════════════════════ */
 
-    /* Renderer caches ML data before a normal blocks save so will-download can inject it */
-    ipcMain.on('ml-set-pending-data', (event, mlData) => {
-        _pendingMLData = mlData;
+    /* Write a file (text string or binary Buffer/Uint8Array) into the ML project directory */
+    ipcMain.handle('ml-write-file', async (event, projectId, relativePath, data) => {
+        const filePath = path.join(mlDir(projectId), relativePath);
+        await fs.ensureDir(path.dirname(filePath));
+        const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data);
+        await fs.writeFile(filePath, buf);
     });
 
-    /* Explicit ML save dialog — writes an .ob ZIP containing only ML data */
-    ipcMain.handle('ml-save-ob-file', async (event, mlData) => {
-        const projectName = (mlData && mlData.metadata && mlData.metadata.name) || 'ml-project';
+    /* Read a file from the ML project directory; returns Buffer or null */
+    ipcMain.handle('ml-read-file', async (event, projectId, relativePath) => {
+        try { return await fs.readFile(path.join(mlDir(projectId), relativePath)); }
+        catch (_) { return null; }
+    });
+
+    /* List filenames (not full paths) in a subdirectory of the ML project directory */
+    ipcMain.handle('ml-list-files', async (event, projectId, subDir) => {
+        const dirPath = path.join(mlDir(projectId), subDir || '');
+        try {
+            const items = await fs.readdir(dirPath, {withFileTypes: true});
+            return items.filter(i => i.isFile()).map(i => i.name);
+        } catch (_) { return []; }
+    });
+
+    /* Delete a single file from the ML project directory */
+    ipcMain.handle('ml-delete-file', async (event, projectId, relativePath) => {
+        try { await fs.unlink(path.join(mlDir(projectId), relativePath)); } catch (_) {}
+    });
+
+    /* Remove the entire ML project directory */
+    ipcMain.handle('ml-delete-project', async (event, projectId) => {
+        try { await fs.remove(mlDir(projectId)); } catch (_) {}
+    });
+
+    /* Renderer tells us which project is active so will-download knows what to bundle */
+    ipcMain.on('ml-set-pending-project', (event, projectId) => {
+        _pendingMLProjectId = projectId;
+    });
+
+    /* Explicit ML save dialog — bundles the ML filesystem directory into a new .ob ZIP */
+    ipcMain.handle('ml-save-ob-file', async (event, projectId, projectName) => {
         const userPath = dialog.showSaveDialogSync(_windows.main, {
-            title: 'Save ML Project',
-            defaultPath: `${projectName}.ob`,
-            filters: [{name: 'OpenBlock Project', extensions: ['ob']}]
+            title:       'Save ML Project',
+            defaultPath: `${projectName || 'ml-project'}.ob`,
+            filters:     [{name: 'OpenBlock Project', extensions: ['ob']}]
         });
         if (!userPath) return {success: false, canceled: true};
         try {
             const JSZip = require('jszip');
-            const zip = new JSZip();
-            zip.file('ml/data.json', _serializeMLData(mlData));
+            const zip   = new JSZip();
+            await bundleMLDir(zip, projectId);
+
+            /* A valid root project.json is required so the blocks editor can open this .ob */
+            const minimalProject = JSON.stringify({
+                targets: [{
+                    isStage: true, name: 'Stage',
+                    variables: {}, lists: {}, broadcasts: {}, blocks: {}, comments: {},
+                    currentCostume: 0,
+                    costumes: [{
+                        name: 'backdrop1', dataFormat: 'svg',
+                        assetId: 'cd21514d0531fdffb22204e0ec5ed84a',
+                        md5ext: 'cd21514d0531fdffb22204e0ec5ed84a.svg',
+                        rotationCenterX: 240, rotationCenterY: 180
+                    }],
+                    sounds: [], volume: 100, layerOrder: 0,
+                    tempo: 60, videoTransparency: 50, videoState: 'on', textToSpeechLanguage: null
+                }],
+                monitors: [], extensions: [],
+                meta: {semver: '3.0.0', vm: '0.2.0', agent: 'RoboCoders-studio'}
+            });
+            zip.file('project.json', minimalProject);
+
             const buf = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
             await fs.writeFile(userPath, buf);
             return {success: true, path: userPath};
@@ -637,20 +745,225 @@ app.on('ready', () => {
         }
     });
 
-    /* Returns ML data extracted from the .ob file that was opened via command-line argument.
-       Called by ml-training-page / audio-training-page on mount. */
-    ipcMain.handle('ml-get-loaded-data', async () => {
-        if (argv._.length === 0) return null;
-        const projectPath = argv._[argv._.length - 1];
+    /* Renderer tells us which .ob file path is currently open (for in-app File → Open). */
+    ipcMain.on('ml-update-current-file', (event, filePath) => {
+        if (filePath) {
+            _lastOpenedFilePath    = filePath;
+            _currentProjectFilePath = filePath;
+            /* Notify ML training pages that a new project file is active */
+            if (_windows.main) _windows.main.webContents.send('ml-project-file-changed');
+        }
+    });
+
+    /* Returns the current project file path (or null) — used by renderer to decide Save vs Save As */
+    ipcMain.handle('get-current-project-path', () => _currentProjectFilePath);
+
+    /* Clears the current project path — called when the user returns to the home screen so that
+       re-entering the blocks editor always starts as an unsaved new project. */
+    ipcMain.handle('clear-current-project-path', () => {
+        _currentProjectFilePath = null;
+    });
+
+    /* Atomically write buf to targetPath: write to a temp file first, then rename.
+       This prevents partial/corrupted files if the process crashes mid-write. */
+    const atomicWriteFile = async (targetPath, buf) => {
+        const tmpPath = targetPath + '.tmp';
+        try {
+            await fs.writeFile(tmpPath, buf);
+            await fs.move(tmpPath, targetPath, {overwrite: true});
+        } catch (e) {
+            // Clean up orphaned temp file on failure
+            try { await fs.unlink(tmpPath); } catch (_) {}
+            throw e;
+        }
+    };
+
+    /* Silent save: write project data directly to the current file path, no dialog.
+       Uses atomic write (temp → rename) to prevent corruption on crash.
+       Optional thumbnailData (Buffer) is stored as thumbnail.png inside the ZIP. */
+    ipcMain.handle('save-project-to-current-file', async (event, projectData, thumbnailData) => {
+        if (!_currentProjectFilePath) return {success: false, error: 'no-path'};
         try {
             const JSZip = require('jszip');
-            const fileBuffer = await fs.readFile(projectPath);
-            const zip = await JSZip.loadAsync(fileBuffer);
-            const mlFile = zip.file('ml/data.json');
-            if (!mlFile) return null;
-            return _deserializeMLData(await mlFile.async('text'));
+            const buf   = Buffer.isBuffer(projectData) ? projectData : Buffer.from(projectData);
+            const zip   = await JSZip.loadAsync(buf);
+
+            /* Bundle ML data; if it fails, abort the save so user isn't left with a broken file */
+            if (_pendingMLProjectId) {
+                try {
+                    await bundleMLDir(zip, _pendingMLProjectId);
+                } catch (mlErr) {
+                    log.error('[main] ML bundling failed, aborting save:', mlErr.message);
+                    return {success: false, error: `ML bundling failed: ${mlErr.message}`};
+                }
+            }
+
+            if (thumbnailData) {
+                zip.file('thumbnail.png', Buffer.isBuffer(thumbnailData) ? thumbnailData : Buffer.from(thumbnailData));
+            }
+
+            const newBuf = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
+            await atomicWriteFile(_currentProjectFilePath, newBuf);
+            const ext   = path.extname(_currentProjectFilePath);
+            const title = path.basename(_currentProjectFilePath, ext);
+            _pendingMLProjectId = null; // clear after successful save
+            return {success: true, title};
+        } catch (e) {
+            log.error('[main] save-project-to-current-file failed:', e.message);
+            return {success: false, error: e.message};
+        }
+    });
+
+    /* Save project data to an explicit path (used for Save As + "Save before open" flows).
+       Updates _currentProjectFilePath so subsequent Ctrl+S hits the same file.
+       Uses atomic write (temp → rename) to prevent corruption on crash.
+       Optional thumbnailData (Buffer) is stored as thumbnail.png inside the ZIP. */
+    ipcMain.handle('save-project-to-path', async (event, filePath, projectData, thumbnailData) => {
+        if (!filePath) return {success: false, error: 'no-path'};
+        try {
+            const JSZip = require('jszip');
+            const buf   = Buffer.isBuffer(projectData) ? projectData : Buffer.from(projectData);
+            const zip   = await JSZip.loadAsync(buf);
+
+            /* Bundle ML data; abort on failure to prevent incomplete files */
+            if (_pendingMLProjectId) {
+                try {
+                    await bundleMLDir(zip, _pendingMLProjectId);
+                } catch (mlErr) {
+                    log.error('[main] ML bundling failed, aborting save-to-path:', mlErr.message);
+                    return {success: false, error: `ML bundling failed: ${mlErr.message}`};
+                }
+            }
+
+            if (thumbnailData) {
+                zip.file('thumbnail.png', Buffer.isBuffer(thumbnailData) ? thumbnailData : Buffer.from(thumbnailData));
+            }
+
+            const newBuf = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
+            await atomicWriteFile(filePath, newBuf);
+            _currentProjectFilePath = filePath;
+            _pendingMLProjectId = null; // clear after successful save
+            const title = path.basename(filePath, path.extname(filePath));
+            return {success: true, title};
+        } catch (e) {
+            log.error('[main] save-project-to-path failed:', e.message);
+            return {success: false, error: e.message};
+        }
+    });
+
+    /* ══════════════════════════════════════════════════════════════
+       Recent files — stored in electron-store, max 10 entries
+       Each entry: { filePath, title, openedAt }
+       ══════════════════════════════════════════════════════════════ */
+    const MAX_RECENT_FILES = 10;
+
+    const addRecentFile = (filePath, title) => {
+        if (!filePath) return;
+        let recents = storage.get('recentFiles', []);
+        // Remove duplicate (same path)
+        recents = recents.filter(r => r.filePath !== filePath);
+        recents.unshift({filePath, title: title || path.basename(filePath, path.extname(filePath)), openedAt: Date.now()});
+        if (recents.length > MAX_RECENT_FILES) recents = recents.slice(0, MAX_RECENT_FILES);
+        storage.set('recentFiles', recents);
+    };
+
+    ipcMain.handle('add-recent-file', (event, filePath, title) => {
+        addRecentFile(filePath, title);
+    });
+
+    ipcMain.handle('get-recent-files', () => {
+        const recents = storage.get('recentFiles', []);
+        // Filter out files that no longer exist on disk
+        return recents.filter(r => {
+            try { return fs.existsSync(r.filePath); } catch (_) { return false; }
+        });
+    });
+
+    ipcMain.handle('clear-recent-files', () => {
+        storage.delete('recentFiles');
+    });
+
+    /* ══════════════════════════════════════════════════════════════
+       Crash-recovery backup handlers
+       Backup lives at: <userData>/crash-backup/backup.ob
+                        <userData>/crash-backup/meta.json
+       ══════════════════════════════════════════════════════════════ */
+    const crashBackupDir  = path.join(app.getPath('userData'), 'crash-backup');
+    const crashBackupFile = path.join(crashBackupDir, 'backup.ob');
+    const crashBackupMeta = path.join(crashBackupDir, 'meta.json');
+
+    /* Write (or overwrite) the crash backup. Called by renderer every few minutes when dirty. */
+    ipcMain.handle('write-crash-backup', async (event, projectData, originalFilePath) => {
+        try {
+            await fs.ensureDir(crashBackupDir);
+            const buf = Buffer.isBuffer(projectData) ? projectData : Buffer.from(projectData);
+            await fs.writeFile(crashBackupFile, buf);
+            await fs.writeFile(crashBackupMeta, JSON.stringify({
+                originalFilePath: originalFilePath || null,
+                savedAt: Date.now()
+            }));
+            return {success: true};
+        } catch (e) {
+            log.error('[main] write-crash-backup failed:', e.message);
+            return {success: false};
+        }
+    });
+
+    /* Delete the backup on clean exit. */
+    ipcMain.handle('clear-crash-backup', async () => {
+        try {
+            await fs.remove(crashBackupDir);
+        } catch (_) {}
+    });
+
+    /* Check if a backup exists. Returns {exists, originalFilePath, savedAt} or {exists: false}. */
+    ipcMain.handle('check-crash-backup', async () => {
+        try {
+            const exists = await fs.pathExists(crashBackupFile);
+            if (!exists) return {exists: false};
+            const meta = JSON.parse(await fs.readFile(crashBackupMeta, 'utf8'));
+            return {exists: true, originalFilePath: meta.originalFilePath, savedAt: meta.savedAt};
         } catch (_) {
-            return null;
+            return {exists: false};
+        }
+    });
+
+    /* Return the backup file buffer so the renderer can load it. */
+    ipcMain.handle('read-crash-backup', async () => {
+        try { return await fs.readFile(crashBackupFile); }
+        catch (_) { return null; }
+    });
+
+    /* Extract ML data from the active .ob file into the project dir.
+       Checks CLI arg first, then the last path reported by the renderer.
+       Called by training pages on mount.
+       Returns: project.json metadata object | {noMlData: true} | {loadError: string} */
+    ipcMain.handle('ml-get-loaded-data', async (event, projectId) => {
+        if (!projectId) return {noMlData: true};
+        /* Resolve the .ob path: CLI arg takes priority over in-app open */
+        const projectPath = argv._.length > 0
+            ? argv._[argv._.length - 1]
+            : _lastOpenedFilePath;
+        if (!projectPath) return {noMlData: true};
+        try {
+            const JSZip      = require('jszip');
+            const fileBuffer = await fs.readFile(projectPath);
+            const zip        = await JSZip.loadAsync(fileBuffer);
+            const hasMl      = Object.keys(zip.files).some(k => k.startsWith('ml/'));
+            if (!hasMl) return {noMlData: true};
+            await extractMLDir(zip, projectId);
+            /* Read the project metadata that was just extracted */
+            const metaPath = path.join(mlDir(projectId), 'project.json');
+            try {
+                const meta = await fs.readFile(metaPath, 'utf8');
+                return JSON.parse(meta);
+            } catch (_) {
+                /* .ob has ml/ files but no project.json — return minimal marker */
+                return {restored: true};
+            }
+        } catch (e) {
+            log.error('[main] ml-get-loaded-data failed:', e.message);
+            return {loadError: e.message};
         }
     });
 
@@ -736,6 +1049,9 @@ const initialProjectDataPromise = (async () => {
         log.warn(`Expected 1 command line argument but received ${argv._.length}.`);
     }
     const projectPath = argv._[argv._.length - 1];
+    /* Seed file trackers so Save and ml-get-loaded-data work on CLI-opened files */
+    _lastOpenedFilePath    = projectPath;
+    _currentProjectFilePath = projectPath;
     try {
         const projectData = await promisify(fs.readFile)(projectPath, null);
         return projectData;
