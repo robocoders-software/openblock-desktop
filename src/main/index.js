@@ -699,6 +699,39 @@ app.on('ready', () => {
         try { await fs.remove(mlDir(projectId)); } catch (_) {}
     });
 
+    /* List all ML projects — scan <userData>/ml-projects/ and return each project.json */
+    ipcMain.handle('ml-list-projects', async () => {
+        const root = path.join(app.getPath('userData'), 'ml-projects');
+        try {
+            await fs.ensureDir(root);
+            const entries = await fs.readdir(root, {withFileTypes: true});
+            const projects = [];
+            for (const entry of entries) {
+                if (!entry.isDirectory()) continue;
+                const metaPath = path.join(root, entry.name, 'project.json');
+                try {
+                    const raw = await fs.readFile(metaPath, 'utf8');
+                    const meta = JSON.parse(raw);
+                    if (meta && meta.id && meta.name) {
+                        /* Ensure required fields always have safe defaults */
+                        projects.push({
+                            type:    'images',
+                            labels:  [],
+                            trained: false,
+                            ...meta
+                        });
+                    }
+                } catch (_) { /* skip corrupted/missing project.json */ }
+            }
+            /* Sort newest first */
+            projects.sort((a, b) => (b.savedAt || b.createdAt || 0) - (a.savedAt || a.createdAt || 0));
+            return projects;
+        } catch (e) {
+            log.error('[main] ml-list-projects failed:', e.message);
+            return [];
+        }
+    });
+
     /* Renderer tells us which project is active so will-download knows what to bundle */
     ipcMain.on('ml-set-pending-project', (event, projectId) => {
         _pendingMLProjectId = projectId;
@@ -748,8 +781,10 @@ app.on('ready', () => {
     /* Renderer tells us which .ob file path is currently open (for in-app File → Open). */
     ipcMain.on('ml-update-current-file', (event, filePath) => {
         if (filePath) {
-            _lastOpenedFilePath    = filePath;
+            _lastOpenedFilePath     = filePath;
             _currentProjectFilePath = filePath;
+            /* Opening a different file makes the old pending ML project irrelevant */
+            _pendingMLProjectId = null;
             /* Notify ML training pages that a new project file is active */
             if (_windows.main) _windows.main.webContents.send('ml-project-file-changed');
         }
@@ -796,6 +831,19 @@ app.on('ready', () => {
                     log.error('[main] ML bundling failed, aborting save:', mlErr.message);
                     return {success: false, error: `ML bundling failed: ${mlErr.message}`};
                 }
+                _pendingMLProjectId = null;
+            } else {
+                /* No new ML export — carry forward any existing ml/ entries from the current file
+                   so the model is preserved across repeated saves (e.g. auto-save, second Ctrl+S). */
+                try {
+                    const existingBuf = await fs.readFile(_currentProjectFilePath);
+                    const existingZip = await JSZip.loadAsync(existingBuf);
+                    for (const [key, file] of Object.entries(existingZip.files)) {
+                        if (key.startsWith('ml/') && !file.dir) {
+                            zip.file(key, await file.async('nodebuffer'));
+                        }
+                    }
+                } catch (_) { /* no existing ml data — that's fine */ }
             }
 
             if (thumbnailData) {
@@ -806,7 +854,6 @@ app.on('ready', () => {
             await atomicWriteFile(_currentProjectFilePath, newBuf);
             const ext   = path.extname(_currentProjectFilePath);
             const title = path.basename(_currentProjectFilePath, ext);
-            _pendingMLProjectId = null; // clear after successful save
             return {success: true, title};
         } catch (e) {
             log.error('[main] save-project-to-current-file failed:', e.message);
@@ -833,6 +880,19 @@ app.on('ready', () => {
                     log.error('[main] ML bundling failed, aborting save-to-path:', mlErr.message);
                     return {success: false, error: `ML bundling failed: ${mlErr.message}`};
                 }
+                _pendingMLProjectId = null;
+            } else if (_currentProjectFilePath) {
+                /* No new ML export — carry forward any existing ml/ entries from the current file
+                   (handles Save As when the existing file already has ML data). */
+                try {
+                    const existingBuf = await fs.readFile(_currentProjectFilePath);
+                    const existingZip = await JSZip.loadAsync(existingBuf);
+                    for (const [key, file] of Object.entries(existingZip.files)) {
+                        if (key.startsWith('ml/') && !file.dir) {
+                            zip.file(key, await file.async('nodebuffer'));
+                        }
+                    }
+                } catch (_) { /* no existing ml data — that's fine */ }
             }
 
             if (thumbnailData) {
@@ -842,7 +902,6 @@ app.on('ready', () => {
             const newBuf = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
             await atomicWriteFile(filePath, newBuf);
             _currentProjectFilePath = filePath;
-            _pendingMLProjectId = null; // clear after successful save
             const title = path.basename(filePath, path.extname(filePath));
             return {success: true, title};
         } catch (e) {
@@ -934,16 +993,32 @@ app.on('ready', () => {
         catch (_) { return null; }
     });
 
-    /* Extract ML data from the active .ob file into the project dir.
-       Checks CLI arg first, then the last path reported by the renderer.
-       Called by training pages on mount.
+    /* Load ML project metadata for a training page on mount.
+       Priority:
+         1. Native project: project.json already exists on disk in the ml-projects dir
+            (created/saved from within the app — the common case).
+         2. .ob file: extract ml/ from the open .ob ZIP into the project dir, then read.
        Returns: project.json metadata object | {noMlData: true} | {loadError: string} */
     ipcMain.handle('ml-get-loaded-data', async (event, projectId) => {
         if (!projectId) return {noMlData: true};
-        /* Resolve the .ob path: CLI arg takes priority over in-app open */
-        const projectPath = argv._.length > 0
-            ? argv._[argv._.length - 1]
-            : _lastOpenedFilePath;
+
+        /* ── Priority 1: native project already on disk ── */
+        const nativeMetaPath = path.join(mlDir(projectId), 'project.json');
+        if (await fs.pathExists(nativeMetaPath)) {
+            try {
+                const raw = await fs.readFile(nativeMetaPath, 'utf8');
+                return JSON.parse(raw);
+            } catch (e) {
+                log.warn('[main] ml-get-loaded-data: could not parse native project.json:', e.message);
+                /* fall through to .ob extraction */
+            }
+        }
+
+        /* ── Priority 2: extract from open .ob file ── */
+        /* Always prefer _lastOpenedFilePath (updated on every File > Open) over argv._ so
+           that opening a second .ob file after launch doesn't read from the first one. */
+        const projectPath = _lastOpenedFilePath ||
+            (argv._.length > 0 ? argv._[argv._.length - 1] : null);
         if (!projectPath) return {noMlData: true};
         try {
             const JSZip      = require('jszip');
@@ -952,18 +1027,45 @@ app.on('ready', () => {
             const hasMl      = Object.keys(zip.files).some(k => k.startsWith('ml/'));
             if (!hasMl) return {noMlData: true};
             await extractMLDir(zip, projectId);
-            /* Read the project metadata that was just extracted */
             const metaPath = path.join(mlDir(projectId), 'project.json');
             try {
-                const meta = await fs.readFile(metaPath, 'utf8');
-                return JSON.parse(meta);
+                let meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+                /* The .ob was created with a possibly-different project id. Stamp it with
+                   the session id so the training page can reliably find its data. */
+                if (meta.id && meta.id !== projectId) {
+                    meta = {...meta, id: projectId};
+                    await fs.writeFile(metaPath, JSON.stringify(meta));
+                }
+                return meta;
             } catch (_) {
-                /* .ob has ml/ files but no project.json — return minimal marker */
                 return {restored: true};
             }
         } catch (e) {
             log.error('[main] ml-get-loaded-data failed:', e.message);
             return {loadError: e.message};
+        }
+    });
+
+    /* ── Read ML metadata from the open .ob file without extracting ── */
+    ipcMain.handle('ml-preload-active-model', async () => {
+        /* Always prefer _lastOpenedFilePath over argv._ — it is updated on every File > Open,
+           whereas argv._ is fixed at launch and would point to the wrong file after re-open. */
+        const projectPath = _lastOpenedFilePath ||
+            (argv._.length > 0 ? argv._[argv._.length - 1] : null);
+        if (!projectPath) return null;
+        try {
+            const JSZip = require('jszip');
+            const fileBuffer = await fs.readFile(projectPath);
+            const zip = await JSZip.loadAsync(fileBuffer);
+            const metaKey = Object.keys(zip.files).find(
+                k => k.startsWith('ml/') && k.endsWith('/project.json')
+            );
+            if (!metaKey) return null;
+            const raw = await zip.files[metaKey].async('string');
+            return JSON.parse(raw);
+        } catch (e) {
+            log.warn('[main] ml-preload-active-model failed:', e.message);
+            return null;
         }
     });
 

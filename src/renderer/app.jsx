@@ -1,4 +1,4 @@
-import React, {useState, useRef, useCallback} from 'react';
+import React, {useState, useRef, useCallback, useEffect} from 'react';
 import {compose} from 'redux';
 import GUI from 'openblock-gui/src/index';
 import AppStateHOC from 'openblock-gui/src/lib/app-state-hoc.jsx';
@@ -32,9 +32,40 @@ const AppRoot = () => {
     const [blocksReady, setBlocksReady] = useState(false);
     // Callback registered by ScratchDesktopGUIHOC once the editor is ready
     const newProjectCbRef = useRef(null);
+    // True when the user reached ML Studio via the home screen (not via "Open ML Env" from blocks).
+    // Used by enterBlocksFromML to decide whether to create a fresh project before exporting.
+    const cameFromHomeRef = useRef(false);
+    // Snapshot of window.__openblockMLModel taken just before entering ML Studio.
+    // Restored on Back so that training a different model without exporting doesn't
+    // silently overwrite the model that was active in the blocks editor.
+    const savedMLModelRef = useRef(null);
 
-    /* Called whenever the user selects "Blocks" from home or ML studio */
+    /* Listen for "Open ML Env" from within the blocks editor */
+    useEffect(() => {
+        const handler = () => {
+            cameFromHomeRef.current = false; // arrived from blocks editor, not home screen
+            savedMLModelRef.current = window.__openblockMLModel || null;
+            setMode('ml');
+        };
+        window.addEventListener('robocoders:open-ml', handler);
+        return () => window.removeEventListener('robocoders:open-ml', handler);
+    }, []);
+
+    /* If the user deletes the model that was active in the blocks editor, don't restore it on Back */
+    useEffect(() => {
+        const handler = e => {
+            if (savedMLModelRef.current &&
+                savedMLModelRef.current.projectId === e.detail.projectId) {
+                savedMLModelRef.current = null;
+            }
+        };
+        window.addEventListener('robocoders:ml-model-deleted', handler);
+        return () => window.removeEventListener('robocoders:ml-model-deleted', handler);
+    }, []);
+
+    /* Called from home screen "Blocks" button — resets to a blank project if returning */
     const enterBlocks = useCallback(() => {
+        cameFromHomeRef.current = false;
         if (blocksReady && newProjectCbRef.current) {
             // Already initialized — just reset to a blank project, no remount
             newProjectCbRef.current();
@@ -43,16 +74,58 @@ const AppRoot = () => {
         setMode('blocks');
     }, [blocksReady]);
 
+    /* Called from ML Studio "Use in Blocks" */
+    const enterBlocksFromML = useCallback(() => {
+        const shouldCreateNew = cameFromHomeRef.current;
+        cameFromHomeRef.current = false;
+        savedMLModelRef.current = null; // export is intentional — don't restore old model
+
+        setBlocksReady(true);
+        setMode('blocks');
+
+        if (!blocksReady) {
+            // WrappedGui is mounting fresh — gui.jsx's useEffect([vm]) handles extension load.
+            return;
+        }
+
+        if (shouldCreateNew && newProjectCbRef.current) {
+            // User came via home screen → ML → export: create a blank project first,
+            // then re-inject the model so the export goes into the new project.
+            const mlModel = window.__openblockMLModel;
+            newProjectCbRef.current(); // resets project, clears __openblockMLModel, unloads extension
+            setTimeout(() => {
+                if (mlModel) window.__openblockMLModel = mlModel;
+                window.dispatchEvent(new CustomEvent('robocoders:ml-export-to-blocks'));
+            }, 0);
+        } else {
+            // User came via "Open ML Env" from an existing project — export into it.
+            window.dispatchEvent(new CustomEvent('robocoders:ml-export-to-blocks'));
+        }
+    }, [blocksReady]);
+
     return (
         <>
             {mode === 'home' && (
-                <HomeScreen onSelectMode={id => (id === 'blocks' ? enterBlocks() : setMode('ml'))} />
+                <HomeScreen onSelectMode={id => {
+                    if (id === 'blocks') {
+                        enterBlocks();
+                    } else {
+                        cameFromHomeRef.current = true;
+                        savedMLModelRef.current = window.__openblockMLModel || null;
+                        setMode('ml');
+                    }
+                }} />
             )}
             {mode === 'ml' && (
                 <MLStudioApp
-                    onEnterBlocks={enterBlocks}
+                    onEnterBlocks={enterBlocksFromML}
                     onBack={() => {
-                        // Signal gui.jsx to unload teachableMachine if no model was exported
+                        // Restore the model that was active before entering ML Studio so that
+                        // training a different model without exporting doesn't silently change
+                        // the blocks editor's active model.
+                        window.__openblockMLModel = savedMLModelRef.current;
+                        savedMLModelRef.current = null;
+                        // Signal gui.jsx to unload/refresh teachableMachine appropriately
                         window.dispatchEvent(new CustomEvent('robocoders:ml-back'));
                         // Always go to blocks editor:
                         // - blocksReady=false → first time, mounts fresh → blank project
