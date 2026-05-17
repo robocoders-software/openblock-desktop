@@ -272,7 +272,11 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     detail: 'Save before creating a new project?'
                 });
                 if (choice === 2) return;
-                if (choice === 0) await this.handleDirectSave(() => {});
+                if (choice === 0) {
+                    await this.handleSaveBeforeOpen();
+                    // User cancelled the Save As dialog — _projectDirty stays true; abort new project
+                    if (this._projectDirty) return;
+                }
             }
             this.handleUpdateProjectTitle('');
             ipcRenderer.send('project-dirty-changed', {dirty: false, title: ''});
