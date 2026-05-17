@@ -28,7 +28,7 @@ GUI.setAppElement(appTarget);
    requestNewProject() via a registered callback instead.
 ──────────────────────────────────────────────────── */
 const AppRoot = () => {
-    const [mode, setMode] = useState('home'); // 'home' | 'blocks' | 'ml'
+    const [mode, setMode] = useState('home'); // 'home' | 'blocks' | 'robotics' | 'ml'
     const [blocksReady, setBlocksReady] = useState(false);
     // Callback registered by ScratchDesktopGUIHOC once the editor is ready
     const newProjectCbRef = useRef(null);
@@ -39,13 +39,17 @@ const AppRoot = () => {
     // Restored on Back so that training a different model without exporting doesn't
     // silently overwrite the model that was active in the blocks editor.
     const savedMLModelRef = useRef(null);
+    // The editor mode ('blocks' | 'robotics') active before entering ML Studio.
+    // Used by ML Back and enterBlocksFromML to return to the right env.
+    const preMlModeRef = useRef('blocks');
 
     /* Listen for "Open ML Env" from within the blocks editor */
     useEffect(() => {
         const handler = () => {
-            cameFromHomeRef.current = false; // arrived from blocks editor, not home screen
+            cameFromHomeRef.current = false;
             savedMLModelRef.current = window.__openblockMLModel || null;
-            setMode('ml');
+            // Remember which editor we came from so Back returns to the right env
+            setMode(prev => { preMlModeRef.current = prev; return 'ml'; });
         };
         window.addEventListener('robocoders:open-ml', handler);
         return () => window.removeEventListener('robocoders:open-ml', handler);
@@ -67,21 +71,40 @@ const AppRoot = () => {
     const enterBlocks = useCallback(() => {
         cameFromHomeRef.current = false;
         if (blocksReady && newProjectCbRef.current) {
-            // Already initialized — just reset to a blank project, no remount
             newProjectCbRef.current();
         }
         setBlocksReady(true);
         setMode('blocks');
     }, [blocksReady]);
 
+    /* Called from home screen "Robotics" button */
+    const enterRobotics = useCallback(() => {
+        cameFromHomeRef.current = false;
+        if (blocksReady) {
+            // Editor already mounted — reset project then trigger board selection
+            if (newProjectCbRef.current) newProjectCbRef.current();
+            // Small delay so the editor is visible before the dialog appears
+            setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('robocoders:open-robotics'));
+            }, 200);
+        } else {
+            // First mount — flag picked up by onRegisterNewProject once GUI is ready
+            window.__openblockRoboticsOnReady = true;
+        }
+        setBlocksReady(true);
+        setMode('robotics');
+    }, [blocksReady]);
+
     /* Called from ML Studio "Use in Blocks" */
     const enterBlocksFromML = useCallback(() => {
         const shouldCreateNew = cameFromHomeRef.current;
         cameFromHomeRef.current = false;
-        savedMLModelRef.current = null; // export is intentional — don't restore old model
+        savedMLModelRef.current = null;
 
+        const returnMode = preMlModeRef.current || 'blocks';
+        preMlModeRef.current = 'blocks';
         setBlocksReady(true);
-        setMode('blocks');
+        setMode(returnMode);
 
         if (!blocksReady) {
             // WrappedGui is mounting fresh and will load a blank project on mount.
@@ -113,8 +136,11 @@ const AppRoot = () => {
                 <HomeScreen onSelectMode={id => {
                     if (id === 'blocks') {
                         enterBlocks();
+                    } else if (id === 'robotics') {
+                        enterRobotics();
                     } else {
                         cameFromHomeRef.current = true;
+                        preMlModeRef.current = 'blocks';
                         savedMLModelRef.current = window.__openblockMLModel || null;
                         setMode('ml');
                     }
@@ -131,11 +157,10 @@ const AppRoot = () => {
                         savedMLModelRef.current = null;
                         // Signal gui.jsx to unload/refresh teachableMachine appropriately
                         window.dispatchEvent(new CustomEvent('robocoders:ml-back'));
-                        // Always go to blocks editor:
-                        // - blocksReady=false → first time, mounts fresh → blank project
-                        // - blocksReady=true  → already mounted → existing project intact
+                        const returnMode = preMlModeRef.current || 'blocks';
+                        preMlModeRef.current = 'blocks';
                         setBlocksReady(true);
-                        setMode('blocks');
+                        setMode(returnMode);
                     }}
                 />
             )}
@@ -147,13 +172,21 @@ const AppRoot = () => {
               */}
             {blocksReady && (
                 <div style={{
-                    display: mode === 'blocks' ? 'block' : 'none',
+                    display: (mode === 'blocks' || mode === 'robotics') ? 'block' : 'none',
                     width: '100%',
                     height: '100%'
                 }}>
                     <WrappedGui
                         onGoHome={() => setMode('home')}
-                        onRegisterNewProject={cb => { newProjectCbRef.current = cb; }}
+                        onRegisterNewProject={cb => {
+                            newProjectCbRef.current = cb;
+                            if (window.__openblockRoboticsOnReady) {
+                                window.__openblockRoboticsOnReady = false;
+                                setTimeout(() => {
+                                    window.dispatchEvent(new CustomEvent('robocoders:open-robotics'));
+                                }, 300);
+                            }
+                        }}
                     />
                 </div>
             )}

@@ -1,15 +1,9 @@
-/* ── Color tokens (all derived from brand purple #9966FF) ──────────
-   primary:      #9966FF  — brand purple, buttons, headers
-   primary-dark: #7040C0  — hover / pressed state
-   secondary:    #774DCB  — secondary actions, badges
-   bg-light:     #F0E8FF  — light tinted backgrounds
-   border:       #C8A8F0  — borders, dividers
-──────────────────────────────────────────────────────────────── */
+/* ── Home Screen ─────────────────────────────────────── */
 
 .homeWrapper {
     width: 100%;
     height: 100%;
-    background: linear-gradient(135deg, #3D1A7A 0%, #6633CC 60%, #9966FF 100%);
+    background: linear-gradient(135deg, #001E57 0%, #003A8C 60%, #004AAD 100%);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -17,6 +11,7 @@
     font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
+/* ── Outer white card ── */
 .card {
     background: white;
     border-radius: 20px;
@@ -27,17 +22,31 @@
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
 }
 
+/* ── "What would you like to do?" banner ── */
 .heading {
     font-size: 28px;
     font-weight: 700;
     color: white;
     text-align: center;
     margin: 0 0 30px;
-    background: linear-gradient(135deg, #9966FF, #774DCB);
+    background: linear-gradient(135deg, #004AAD, #003A8C);
     border-radius: 14px;
     padding: 22px 30px;
 }
 
+/* ── Top row: Block Coding + Robotics side by side ── */
+.topRow {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.topRow .section {
+    flex: 1;
+    margin-bottom: 0;
+}
+
+/* ── Section ── */
 .section {
     margin-bottom: 20px;
 }
@@ -51,12 +60,14 @@
     letter-spacing: 0.3px;
 }
 
+/* ── Card grid ── */
 .modeGrid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 14px;
 }
 
+/* ── Individual mode card ── */
 .modeCard {
     background: #fff;
     border: 1.5px solid #e8e8e8;
@@ -71,28 +82,30 @@
 }
 
 .modeCard:hover {
-    box-shadow: 0 6px 24px rgba(153, 102, 255, 0.25);
-    border-color: #9966FF;
+    box-shadow: 0 6px 24px rgba(0, 74, 173, 0.25);
+    border-color: #004AAD;
     transform: translateY(-2px);
 }
 
 .modeCard:focus {
-    box-shadow: 0 0 0 3px rgba(153, 102, 255, 0.5);
-    border-color: #9966FF;
+    box-shadow: 0 0 0 3px rgba(0, 74, 173, 0.5);
+    border-color: #004AAD;
 }
 
+/* ── Age badge ── */
 .ageBadge {
     position: absolute;
     top: 10px;
     right: 10px;
-    background: #F0E8FF;
-    color: #7040C0;
+    background: #E8F2FF;
+    color: #003A8C;
     font-size: 10px;
     font-weight: 700;
     padding: 3px 8px;
     border-radius: 20px;
 }
 
+/* ── Icon ── */
 .modeIcon {
     width: 64px;
     height: 64px;
@@ -109,6 +122,7 @@
     object-fit: contain;
 }
 
+/* ── Card text ── */
 .modeTitle {
     font-size: 15px;
     font-weight: 700;

@@ -1,5 +1,5 @@
-html, body {
-    background-color: #9966FF;
+﻿html, body {
+    background-color: #004AAD;
     color: white;
     font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-weight: normal;
@@ -87,13 +87,13 @@ a:active, a:hover {
 .tab.isSelected {
     height: 90%;
     background-color: white;
-    color: #9966FF;
+    color: #004AAD;
     border-bottom: none;
     z-index: 4;
 }
 
 .tab.active {
-    background-color: hsla(260, 100%, 70%, 0.15);
+    background-color: hsla(214, 100%, 34%, 0.15);
 }
 
 .tabs {
