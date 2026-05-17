@@ -737,6 +737,37 @@ app.on('ready', () => {
         _pendingMLProjectId = projectId;
     });
 
+    /* Clear the pending project when it is deleted so will-download doesn't try to bundle
+       a directory that no longer exists, which would stall the next project open/save. */
+    ipcMain.on('ml-clear-pending-project', (event, projectId) => {
+        if (!projectId || _pendingMLProjectId === projectId) {
+            _pendingMLProjectId = null;
+        }
+    });
+
+    /* Check whether the ML model bundled inside a .ob file still exists on disk.
+       Called before loading so the renderer can warn the user if the model was deleted. */
+    ipcMain.handle('ml-check-ob-model', async (event, filePath) => {
+        if (!filePath) return {hasMLData: false};
+        try {
+            const JSZip = require('jszip');
+            const fileBuffer = await fs.readFile(filePath);
+            const zip = await JSZip.loadAsync(fileBuffer);
+            const metaKey = Object.keys(zip.files).find(
+                k => k.startsWith('ml/') && k.endsWith('/project.json')
+            );
+            if (!metaKey) return {hasMLData: false};
+            const raw = await zip.files[metaKey].async('string');
+            const meta = JSON.parse(raw);
+            if (!meta || !meta.id) return {hasMLData: false};
+            const exists = await fs.pathExists(mlDir(meta.id));
+            return {hasMLData: true, mlDeleted: !exists, projectId: meta.id, projectName: meta.name || ''};
+        } catch (e) {
+            log.warn('[main] ml-check-ob-model failed:', e.message);
+            return {hasMLData: false};
+        }
+    });
+
     /* Explicit ML save dialog — bundles the ML filesystem directory into a new .ob ZIP */
     ipcMain.handle('ml-save-ob-file', async (event, projectId, projectName) => {
         const userPath = dialog.showSaveDialogSync(_windows.main, {

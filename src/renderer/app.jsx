@@ -84,19 +84,23 @@ const AppRoot = () => {
         setMode('blocks');
 
         if (!blocksReady) {
-            // WrappedGui is mounting fresh — gui.jsx's useEffect([vm]) handles extension load.
+            // WrappedGui is mounting fresh and will load a blank project on mount.
+            // Pre-arm the pending export so the PROJECT_LOADED handler in gui.jsx
+            // picks it up and fires robocoders:ml-export-to-blocks once the blank
+            // project finishes loading — same mechanism as the shouldCreateNew path below.
+            window.__openblockMLPendingExport = window.__openblockMLModel || null;
             return;
         }
 
         if (shouldCreateNew && newProjectCbRef.current) {
-            // User came via home screen → ML → export: create a blank project first,
-            // then re-inject the model so the export goes into the new project.
-            const mlModel = window.__openblockMLModel;
+            // User came via home screen → ML → export: create a blank project first.
+            // We signal gui.jsx's PROJECT_LOADED handler to trigger the export once the
+            // blank project is fully loaded — avoids the race where PROJECT_LOADED fires
+            // after the export event and clears the model, compressing/breaking the blocks.
+            window.__openblockMLPendingExport = window.__openblockMLModel || null;
             newProjectCbRef.current(); // resets project, clears __openblockMLModel, unloads extension
-            setTimeout(() => {
-                if (mlModel) window.__openblockMLModel = mlModel;
-                window.dispatchEvent(new CustomEvent('robocoders:ml-export-to-blocks'));
-            }, 0);
+            // gui.jsx's PROJECT_LOADED handler picks up __openblockMLPendingExport and
+            // restores the model + fires robocoders:ml-export-to-blocks from there.
         } else {
             // User came via "Open ML Env" from an existing project — export into it.
             window.dispatchEvent(new CustomEvent('robocoders:ml-export-to-blocks'));
