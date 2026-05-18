@@ -11,6 +11,7 @@ import DesktopLink from './OpenblockDesktopLink.js';
 import MacOSMenu from './MacOSMenu';
 import log from '../common/log.js';
 import {productName, version} from '../../package.json';
+import './board-manager.js';
 
 import {v4 as uuidv4} from 'uuid';
 import ElectronStore from 'electron-store';
@@ -36,6 +37,10 @@ const mlDir = projectId => path.join(app.getPath('userData'), 'ml-projects', pro
 
 /* Last .ob file path the renderer reported opening (for ml-get-loaded-data fallback). */
 let _lastOpenedFilePath = null;
+
+/* When true, ml-get-loaded-data must NOT extract ml/ data from the .ob (user chose
+   "Continue without ML blocks" for a project whose ML model was deleted). */
+let _mlSkipRestore = false;
 
 /* The currently active project file path — used for silent Save (no dialog). */
 let _currentProjectFilePath = null;
@@ -1046,6 +1051,13 @@ app.on('ready', () => {
         }
 
         /* ── Priority 2: extract from open .ob file ── */
+        /* Skip if the renderer signalled that the ML model was deleted and the user
+           chose "Continue without ML blocks" — do NOT silently restore the deleted project. */
+        if (_mlSkipRestore) {
+            _mlSkipRestore = false; // consume the flag (one-shot per open)
+            return {noMlData: true};
+        }
+
         /* Always prefer _lastOpenedFilePath (updated on every File > Open) over argv._ so
            that opening a second .ob file after launch doesn't read from the first one. */
         const projectPath = _lastOpenedFilePath ||
@@ -1204,6 +1216,16 @@ const initialProjectDataPromise = (async () => {
 })(); // IIFE
 
 ipcMain.handle('get-initial-project-data', () => initialProjectDataPromise);
+
+/* Expose the path of the file that was opened at launch (double-click / CLI arg).
+   The renderer uses this to run the ML deleted-model check on the initial project. */
+ipcMain.handle('get-initial-file-path', () => _lastOpenedFilePath);
+
+/* Renderer calls this when the user chose "Continue without ML blocks" so the
+   main-process ml-get-loaded-data handler skips extracting ml/ data from the .ob. */
+ipcMain.on('ml-set-skip-restore', (event, skip) => {
+    _mlSkipRestore = Boolean(skip);
+});
 
 ipcMain.on('open-about-window', () => {
     _windows.about.show();

@@ -1,7 +1,19 @@
 directories:
   buildResources: buildResources
   output: dist
-extraFiles: ['LICENSE', 'LICENSE.ScratchFoundation', 'TRADEMARK', "tools", "external-resources", 'firmwares', "drivers"]
+extraFiles:
+  - 'LICENSE'
+  - 'LICENSE.ScratchFoundation'
+  - 'TRADEMARK'
+  - 'external-resources'
+  - 'firmwares'
+  - 'drivers'
+  - 'board-packs'
+  - from: 'tools'
+    to: 'tools'
+    filter:
+      - '**'
+      - '!Arduino/packages/**'
 
 appId: RoboCoders-studio.cc.RoboCoders-studio-desktop
 productName: "RoboCoders-studio-Desktop"
