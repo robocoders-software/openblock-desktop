@@ -1,6 +1,6 @@
 import {ipcRenderer, clipboard} from 'electron';
-import {dialog} from '@electron/remote';
 import * as remote from '@electron/remote/renderer';
+import showAppDialog from 'openblock-gui/src/lib/app-dialog-service.js';
 import bindAll from 'lodash.bindall';
 import omit from 'lodash.omit';
 import PropTypes from 'prop-types';
@@ -76,6 +76,38 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     .catch(() => {
                         this.props.onSetDeviceData(makeDeviceLibrary());
                     });
+
+                /* ── ML deleted-model check for files opened via double-click / CLI ──
+                   When a .ob is opened this way it bypasses sb-file-uploader-hoc, so
+                   the check must happen here before vm.loadProject extracts ml/ data. */
+                try {
+                    const initialFilePath = await ipcRenderer.invoke('get-initial-file-path');
+                    if (initialFilePath && /\.ob$/i.test(initialFilePath)) {
+                        const mlCheck = await ipcRenderer.invoke('ml-check-ob-model', initialFilePath);
+                        if (mlCheck && mlCheck.mlDeleted) {
+                            const name = mlCheck.projectName || 'Unknown';
+                            const idx = await showAppDialog({
+                                type: 'warning',
+                                title: 'ML Model Not Found',
+                                message: `The ML model "${name}" used in this project has been deleted.`,
+                                detail: 'You can continue without ML blocks, or cancel.',
+                                buttons: ['Continue without ML blocks', 'Cancel'],
+                                defaultId: 0
+                            });
+                            if (idx === 1) {
+                                /* User cancelled — abort load, start fresh */
+                                this.props.onLoadingCompleted();
+                                ipcRenderer.send('loading-completed');
+                                this.props.onHasInitialProject(false, this.props.loadingState);
+                                this.props.onRequestNewProject();
+                                return;
+                            }
+                            window.__openblockMLSkipRestore = true;
+                            ipcRenderer.send('ml-set-skip-restore', true);
+                        }
+                    }
+                } catch (_) { /* ML check failed — proceed normally */ }
+
                 this.props.vm.loadProject(initialProjectData).then(
                     () => {
                         this.props.onLoadingCompleted();
@@ -86,7 +118,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                         this.props.onLoadingCompleted();
                         ipcRenderer.send('loading-completed');
                         this.props.onLoadedProject(this.props.loadingState, false);
-                        dialog.showMessageBox(remote.getCurrentWindow(), {
+                        showAppDialog({
                             type: 'error',
                             title: 'Failed to load project',
                             message: 'Invalid or corrupt project file.',
@@ -200,15 +232,13 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 const info = await ipcRenderer.invoke('check-crash-backup');
                 if (!info || !info.exists) return;
                 const savedAt = info.savedAt ? new Date(info.savedAt).toLocaleString() : 'unknown time';
-                const {dialog: remoteDialog} = window.require('@electron/remote');
-                const choice = remoteDialog.showMessageBoxSync({
+                const choice = await showAppDialog({
                     type: 'question',
-                    buttons: ['Restore Backup', 'Discard'],
-                    defaultId: 0,
-                    cancelId: 1,
                     title: 'Unsaved Project Backup Found',
                     message: 'RoboCoders Studio closed unexpectedly.',
-                    detail: `A backup from ${savedAt} was found${info.originalFilePath ? `\n(${info.originalFilePath})` : ''}.\n\nRestore it?`
+                    detail: `A backup from ${savedAt} was found${info.originalFilePath ? `\n(${info.originalFilePath})` : ''}.\n\nRestore it?`,
+                    buttons: ['Restore Backup', 'Discard'],
+                    defaultId: 0
                 });
                 if (choice === 0) {
                     const backupData = await ipcRenderer.invoke('read-crash-backup');
@@ -234,15 +264,13 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         }
         async handleGoHome () {
             if (this._projectDirty) {
-                const {dialog: remoteDialog} = window.require('@electron/remote');
-                const choice = remoteDialog.showMessageBoxSync({
+                const choice = await showAppDialog({
                     type: 'question',
-                    buttons: ['Save & Go Home', "Don't Save", 'Cancel'],
-                    defaultId: 0,
-                    cancelId: 2,
                     title: 'Unsaved Changes',
                     message: 'You have unsaved changes.',
-                    detail: 'Save your project before returning to the home screen?'
+                    detail: 'Save your project before returning to the home screen?',
+                    buttons: ['Save & Go Home', "Don't Save", 'Cancel'],
+                    defaultId: 0
                 });
                 if (choice === 2) return;
                 if (choice === 0) await this.handleDirectSave(() => {});
@@ -261,15 +289,13 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         }
         async handleNewBlocksProject () {
             if (this._projectDirty) {
-                const {dialog: remoteDialog} = window.require('@electron/remote');
-                const choice = remoteDialog.showMessageBoxSync({
+                const choice = await showAppDialog({
                     type: 'question',
-                    buttons: ['Save', "Don't Save", 'Cancel'],
-                    defaultId: 0,
-                    cancelId: 2,
                     title: 'Unsaved Changes',
                     message: 'You have unsaved changes.',
-                    detail: 'Save before creating a new project?'
+                    detail: 'Save before creating a new project?',
+                    buttons: ['Save', "Don't Save", 'Cancel'],
+                    defaultId: 0
                 });
                 if (choice === 2) return;
                 if (choice === 0) {
@@ -351,12 +377,12 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 const currentTitle = (this.state && this.state.projectTitle) ||
                     (this.props && this.props.projectTitle) || 'project';
                 try {
-                    const {dialog: remoteDialog} = window.require('@electron/remote');
-                    savePath = remoteDialog.showSaveDialogSync({
+                    const result = await remote.dialog.showSaveDialog({
                         title: 'Save Project',
                         defaultPath: `${currentTitle}.ob`,
                         filters: [{name: 'OpenBlock Project', extensions: ['ob']}]
                     });
+                    savePath = result.canceled ? null : result.filePath;
                 } catch (_) { /* not in Electron */ }
                 if (!savePath) return; /* user cancelled Save As — proceed with open anyway */
             }
@@ -448,34 +474,22 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             this.props.onSetProjectTitle(newTitle);
         }
         handleShowMessageBox (type, message) {
-            /**
-             * To avoid the electron bug: the input-box lose focus after call alert or confirm on windows platform.
-             * https://github.com/electron/electron/issues/19977
-            */
-            if (this.platform === 'win32') {
-                let options;
-                if (type === MessageBoxType.confirm) {
-                    options = {
-                        type: 'warning',
-                        buttons: ['Ok', 'Cancel'],
-                        message: message
-                    };
-                } else if (type === MessageBoxType.alert) {
-                    options = {
-                        type: 'error',
-                        message: message
-                    };
-                }
-                const result = dialog.showMessageBoxSync(remote.getCurrentWindow(), options);
-                if (result === 0) {
-                    return true;
-                }
-                return false;
+            if (type === MessageBoxType.confirm) {
+                return showAppDialog({
+                    type: 'question',
+                    title: 'Confirm',
+                    message,
+                    buttons: ['OK', 'Cancel'],
+                    defaultId: 0
+                }).then(idx => idx === 0);
             }
-            if (type === 'confirm') {
-                return confirm(message); // eslint-disable-line no-alert
-            }
-            return alert(message); // eslint-disable-line no-alert
+            return showAppDialog({
+                type: 'info',
+                title: 'Notice',
+                message,
+                buttons: ['OK'],
+                defaultId: 0
+            });
         }
         render () {
             const childProps = omit(this.props, Object.keys(ScratchDesktopGUIComponent.propTypes));
