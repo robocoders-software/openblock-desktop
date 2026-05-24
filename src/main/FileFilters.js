@@ -25,7 +25,7 @@ const saveFilters = {
     },
     OB: {
         name: 'RoboCoders Studio Project',
-        extensions: ['ob']
+        extensions: ['rc']
     },
     Sprite2: {
         name: 'Scratch 2 Sprite',

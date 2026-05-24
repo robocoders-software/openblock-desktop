@@ -385,7 +385,7 @@ const createLoadingWindow = () => {
 
 const getIsProjectSave = downloadItem => {
     switch (downloadItem.getMimeType()) {
-    case 'application/x.openblock.ob':
+    case 'application/x.robocoders.rc':
         return true;
     }
     return false;
@@ -777,8 +777,8 @@ app.on('ready', () => {
     ipcMain.handle('ml-save-ob-file', async (event, projectId, projectName) => {
         const userPath = dialog.showSaveDialogSync(_windows.main, {
             title:       'Save ML Project',
-            defaultPath: `${projectName || 'ml-project'}.ob`,
-            filters:     [{name: 'OpenBlock Project', extensions: ['ob']}]
+            defaultPath: `${projectName || 'ml-project'}.rc`,
+            filters:     [{name: 'RoboCoders Studio Project', extensions: ['rc']}]
         });
         if (!userPath) return {success: false, canceled: true};
         try {
@@ -984,7 +984,7 @@ app.on('ready', () => {
                         <userData>/crash-backup/meta.json
        ══════════════════════════════════════════════════════════════ */
     const crashBackupDir  = path.join(app.getPath('userData'), 'crash-backup');
-    const crashBackupFile = path.join(crashBackupDir, 'backup.ob');
+    const crashBackupFile = path.join(crashBackupDir, 'backup.rc');
     const crashBackupMeta = path.join(crashBackupDir, 'meta.json');
 
     /* Write (or overwrite) the crash backup. Called by renderer every few minutes when dirty. */

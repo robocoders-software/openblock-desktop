@@ -22,7 +22,7 @@ publish:
 artifactName: "RoboCoders-studio-Desktop_v${version}_${os}_${arch}.${ext}"
 
 fileAssociations:
-  ext: ob
+  ext: rc
   name: RoboCoders-studio project file
   role: Editor
   icon: buildResources/OpenBlockFile.ico

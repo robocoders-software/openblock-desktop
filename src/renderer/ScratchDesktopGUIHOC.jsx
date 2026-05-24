@@ -82,7 +82,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                    the check must happen here before vm.loadProject extracts ml/ data. */
                 try {
                     const initialFilePath = await ipcRenderer.invoke('get-initial-file-path');
-                    if (initialFilePath && /\.ob$/i.test(initialFilePath)) {
+                    if (initialFilePath && /\.rc$/i.test(initialFilePath)) {
                         const mlCheck = await ipcRenderer.invoke('ml-check-ob-model', initialFilePath);
                         if (mlCheck && mlCheck.mlDeleted) {
                             const name = mlCheck.projectName || 'Unknown';
@@ -379,8 +379,8 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 try {
                     const result = await remote.dialog.showSaveDialog({
                         title: 'Save Project',
-                        defaultPath: `${currentTitle}.ob`,
-                        filters: [{name: 'OpenBlock Project', extensions: ['ob']}]
+                        defaultPath: `${currentTitle}.rc`,
+                        filters: [{name: 'RoboCoders Studio Project', extensions: ['rc']}]
                     });
                     savePath = result.canceled ? null : result.filePath;
                 } catch (_) { /* not in Electron */ }

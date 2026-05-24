@@ -102,22 +102,19 @@ done:
 
 !macroend
 
+; ── Helper: extract one board pack via PowerShell Expand-Archive ─────────────
+!macro _ExtractPack PkgId PkgName
+    DetailPrint "Installing ${PkgName} board support..."
+    ExecWait 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$INSTDIR\board-packs\${PkgId}.zip\" -DestinationPath \"$INSTDIR\tools\Arduino\packages\" -Force"' $0
+    ${If} $0 != 0
+        MessageBox MB_OK|MB_ICONEXCLAMATION \
+            "Warning: Failed to install ${PkgName} board support (code $0).$\nYou can install it later from within the application."
+    ${EndIf}
+!macroend
+!define ExtractPack "!insertmacro _ExtractPack"
+
 ; ── Extract selected board packs after main files are installed ───────────────
 !macro customInstall
-
-    ; Helper macro to extract one board pack via PowerShell Expand-Archive
-    !define ExtractPack "!insertmacro _ExtractPack"
-    !macro _ExtractPack PkgId PkgName
-        DetailPrint "Installing ${PkgName} board support..."
-        nsExec::ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \
-            "Expand-Archive -Path \"$INSTDIR\board-packs\${PkgId}.zip\" \
-            -DestinationPath \"$INSTDIR\tools\Arduino\packages\" -Force"'
-        Pop $0
-        ${If} $0 != 0
-            MessageBox MB_OK|MB_ICONEXCLAMATION \
-                "Warning: Failed to install ${PkgName} board support (code $0).$\nYou can install it later from within the application."
-        ${EndIf}
-    !macroend
 
     ${If} $State_Arduino == ${BST_CHECKED}
         !insertmacro _ExtractPack "arduino" "Arduino"

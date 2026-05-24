@@ -6,9 +6,26 @@
  * Usage: node scripts/create-board-packs.js
  */
 
-const {execSync} = require('child_process');
+const {execSync, spawnSync} = require('child_process');
 const fs = require('fs');
 const path = require('path');
+
+/* Locate 7-Zip — required for board packs > 2 GB (PowerShell Compress-Archive limit) */
+function find7zip () {
+    const candidates = [
+        'C:\\Program Files\\7-Zip\\7z.exe',
+        'C:\\Program Files (x86)\\7-Zip\\7z.exe'
+    ];
+    for (const p of candidates) {
+        if (fs.existsSync(p)) return p;
+    }
+    try {
+        const r = spawnSync('where', ['7z'], {encoding: 'utf8'});
+        if (r.status === 0 && r.stdout.trim()) return r.stdout.trim().split('\n')[0].trim();
+    } catch (_) { /* not found */ }
+    return null;
+}
+const SEVEN_ZIP = find7zip();
 
 const PACKAGES_DIR = path.resolve(__dirname, '..', 'tools', 'Arduino', 'packages');
 const BOARD_PACKS_DIR = path.resolve(__dirname, '..', 'board-packs');
@@ -70,6 +87,9 @@ if (!fs.existsSync(BOARD_PACKS_DIR)) {
     fs.mkdirSync(BOARD_PACKS_DIR, {recursive: true});
 }
 
+console.log(`Using compressor: ${SEVEN_ZIP ? `7-Zip (${SEVEN_ZIP})` : 'PowerShell Compress-Archive'}`);
+if (!SEVEN_ZIP) console.log('Tip: install 7-Zip to handle board packs > 2 GB.\n');
+
 const manifest = {};
 let totalRaw = 0, totalZip = 0;
 
@@ -86,18 +106,37 @@ for (const [pkgId, info] of Object.entries(BOARD_PACKS)) {
 
     process.stdout.write(`[zip]  ${pkgId} (${mb(rawBytes)}) → ${pkgId}.zip ... `);
 
-    /* Remove old archive so Compress-Archive doesn't append to it */
+    /* Remove old archive so the compressor doesn't append to it */
     if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
-    /* PowerShell Compress-Archive: -Path 'dir' zips the folder WITH its name as root.
-       Extracting to packages/ recreates packages/<pkgId>/  */
-    const cmd = `powershell -NoProfile -NonInteractive -Command ` +
-        `"Compress-Archive -Path '${pkgDir}' -DestinationPath '${zipPath}' -CompressionLevel Optimal"`;
+    /* Use 7-Zip when available (no 2 GB limit, faster).
+       Fall back to PowerShell Compress-Archive for packs that fit within its 2 GB limit. */
+    let cmd;
+    if (SEVEN_ZIP) {
+        /* 7z a -tzip -mx=5 out.zip folderPath — zips folder WITH its name as root */
+        cmd = `"${SEVEN_ZIP}" a -tzip -mx=5 "${zipPath}" "${pkgDir}"`;
+    } else {
+        if (rawBytes > 2 * 1024 * 1024 * 1024) {
+            console.error(`\n[error] ${pkgId} is ${mb(rawBytes)} — too large for PowerShell Compress-Archive (2 GB limit).`);
+            console.error('        Install 7-Zip from https://www.7-zip.org/ and re-run.\n');
+            process.exit(1);
+        }
+        /* PowerShell Compress-Archive: -Path 'dir' zips the folder WITH its name as root.
+           Extracting to packages/ recreates packages/<pkgId>/  */
+        cmd = `powershell -NoProfile -NonInteractive -Command ` +
+            `"Compress-Archive -Path '${pkgDir}' -DestinationPath '${zipPath}' -CompressionLevel Optimal"`;
+    }
 
     try {
         execSync(cmd, {stdio: 'pipe'});
     } catch (err) {
         console.error(`\nFailed: ${err.message}`);
+        process.exit(1);
+    }
+
+    if (!fs.existsSync(zipPath)) {
+        console.error(`\n[error] ${pkgId}.zip was not created — compressor may have hit a size or memory limit.`);
+        if (!SEVEN_ZIP) console.error('        Install 7-Zip from https://www.7-zip.org/ and re-run.');
         process.exit(1);
     }
 
