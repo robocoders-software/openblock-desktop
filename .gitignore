@@ -13,6 +13,7 @@ dist/
 build/
 out/
 release/
+board-packs/
 
 # Generated/runtime assets
 external-resources/
