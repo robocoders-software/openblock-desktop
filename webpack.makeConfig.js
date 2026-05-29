@@ -154,7 +154,12 @@ const makeConfig = function (defaultConfig, options) {
                 // Force all packages (including openblock-gui which has its own node_modules/react)
                 // to use the same single React copy so hooks work correctly.
                 'react': path.resolve(__dirname, 'node_modules/react'),
-                'react-dom': path.resolve(__dirname, 'node_modules/react-dom')
+                'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
+                // Force a single immutable copy so OrderedMap instanceof checks don't fail.
+                // openblock-gui and openblock-vm each have their own node_modules/immutable;
+                // without this alias webpack bundles all three copies and Redux's OrderedMap
+                // fails the MonitorList prop-type check, breaking blocks rendering.
+                'immutable': path.resolve(__dirname, 'node_modules/immutable')
             }
         }
     });

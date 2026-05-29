@@ -1,8 +1,37 @@
 const path = require('path');
+const fs   = require('fs');
+const {execSync} = require('child_process');
 
 const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 const makeConfig = require('./webpack.makeConfig.js');
+
+/* Ensure ML assets exist before webpack starts.
+   If missing, run the download scripts automatically so every build path
+   (build:dev / build:dir / build:dist / dist) includes the required files. */
+const mlAssets = [
+    {
+        check: path.resolve(__dirname, 'external-resources', 'libs', 'speech-commands.min.js'),
+        script: 'scripts/download-speech-commands.js',
+        label: 'speech-commands'
+    },
+    {
+        check: path.resolve(__dirname, 'external-resources', 'models', 'mobilenet_v1_0.25_224', 'model.json'),
+        script: 'scripts/download-mobilenet.js',
+        label: 'mobilenet'
+    }
+];
+for (const asset of mlAssets) {
+    if (!fs.existsSync(asset.check)) {
+        console.log(`[webpack] ${asset.label} assets missing — running ${asset.script}…`);
+        try {
+            execSync(`node ${asset.script}`, {cwd: __dirname, stdio: 'inherit'});
+        } catch (e) {
+            console.error(`[webpack] WARNING: ${asset.script} failed:`, e.message);
+            console.error(`[webpack] ${asset.label} will not work until assets are downloaded.`);
+        }
+    }
+}
 
 // Fixed the issue that when using link to local gui package in node16, an error message appears saying that the
 // blocks vm package in gui cannot be found.

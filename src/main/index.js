@@ -194,9 +194,12 @@ const displayPermissionDeniedWarning = (browserWindow, permissionType) => {
         });
         break;
     }
-    message = `${message}\n\n${instructions}`;
-
-    dialog.showMessageBox(browserWindow, {type: 'warning', title, message});
+    /* Use renderer-side custom dialog so it matches the app's visual style */
+    if (browserWindow && !browserWindow.isDestroyed()) {
+        browserWindow.webContents.send('main-show-dialog', {
+            type: 'warning', title, message, detail: instructions, buttons: ['OK']
+        });
+    }
 };
 
 /**
@@ -218,23 +221,110 @@ const makeFullUrl = (url, search = null) => {
     return fullUrl.toString();
 };
 
+/* Storage keys for persisted per-device permission choices. */
+const MEDIA_PERM_KEYS = {
+    microphone: 'permissions.microphone',
+    camera:     'permissions.camera'
+};
+
+/* Deduplicates concurrent permission requests for the same device.
+   If the user triggers getUserMedia multiple times before the first dialog closes,
+   all calls share the same in-flight Promise rather than spawning multiple dialogs. */
+const _pendingPermRequests = new Map();
+
 /**
- * Prompt in a platform-specific way for permission to access the microphone or camera, if Electron supports doing so.
- * Any application-level checks, such as whether or not a particular frame or document should be allowed to ask,
- * should be done before calling this function.
- * This function may return a Promise!
+ * Ask the user (or the OS) for permission to access a media device.
+ * - macOS  : delegates to systemPreferences.askForMediaAccess (native system dialog).
+ * - Windows: checks OS privacy settings first; then shows our own dialog and persists
+ *            the choice so the user is only asked once per device.
+ * - Linux  : shows our dialog and persists the choice.
  *
- * @param {string} mediaType - one of Electron's media types, like 'microphone' or 'camera'
- * @returns {boolean|Promise.<boolean>} - true if permission granted, false otherwise.
+ * @param {string} mediaType - 'microphone' or 'camera'
+ * @param {BrowserWindow} parentWindow - window to attach the dialog to
+ * @returns {Promise<boolean>} true if permission granted
  */
-const askForMediaAccess = mediaType => {
+const _askForMediaAccessImpl = async (mediaType, parentWindow) => {
+    /* ── macOS: use the native system permission dialog ── */
     if (systemPreferences.askForMediaAccess) {
-        // Electron currently only implements this on macOS
-        // This returns a Promise
         return systemPreferences.askForMediaAccess(mediaType);
     }
-    // For other platforms we can't reasonably do anything other than assume we have access.
-    return true;
+
+    const win = parentWindow || BrowserWindow.getFocusedWindow();
+
+    /* ── Windows: check OS privacy settings first.
+       If the OS has blocked access, show a warning and stop — there's nothing the
+       in-app dialog can do; the user must fix it in Windows Privacy settings.
+       If the OS allows (or hasn't been asked yet), fall through to our custom
+       Allow/Deny dialog so the user explicitly confirms in-app.
+       Note: the old Windows-only auto-grant path is intentionally removed.
+       The handlePermissionRequest caller already clears Chromium's ContentSettings
+       cache on denial (clearStorageData), so callback(false) is safe. ── */
+    if (process.platform === 'win32' && systemPreferences.getMediaAccessStatus) {
+        const osStatus = systemPreferences.getMediaAccessStatus(mediaType);
+        if (osStatus === 'denied') {
+            displayPermissionDeniedWarning(win, mediaType);
+            return false;
+        }
+        // not-determined / granted → fall through to in-app dialog below
+    }
+
+    /* ── Windows / Linux / other platforms: show our custom Allow/Deny dialog ── */
+    const storeKey = MEDIA_PERM_KEYS[mediaType] || `permissions.${mediaType}`;
+    const stored = storage.get(storeKey, null);
+    if (stored === true) return true;
+    if (stored === false) storage.delete(storeKey);
+
+    /* ── Ask the user via the renderer's custom dialog ── */
+    const deviceLabel = mediaType === 'camera' ? 'Camera' : 'Microphone';
+    const featureDesc = mediaType === 'camera'
+        ? 'video sensing, photo capture, and camera-based blocks'
+        : 'sound recording, loudness detection, and speech recognition blocks';
+
+    const replyId = `${mediaType}-${Date.now()}`;
+    const responseIdx = await new Promise(resolve => {
+        let settled = false;
+        const settle = idx => {
+            if (settled) return;
+            settled = true;
+            ipcMain.removeListener(`main-perm-reply-${replyId}`, onReply);
+            win.removeListener('closed', onWinClose);
+            clearTimeout(timer);
+            resolve(idx);
+        };
+        const onReply = (event, idx) => settle(idx);
+        const onWinClose = () => settle(1); // window closed → treat as Deny
+        const timer = setTimeout(() => settle(1), 30000); // 30s timeout → Deny
+
+        ipcMain.on(`main-perm-reply-${replyId}`, onReply);
+        win.once('closed', onWinClose);
+        win.webContents.send('main-show-perm-dialog', {
+            replyId,
+            type:      'question',
+            buttons:   ['Allow', 'Deny'],
+            defaultId: 0,
+            title:   `Allow ${deviceLabel} Access`,
+            message: `RoboCoders Studio would like to use your ${deviceLabel}.`,
+            detail:  `This permission is needed for ${featureDesc}.\n\n` +
+                     `You can change this at any time from the settings gear → Device Permissions.`
+        });
+    });
+
+    const granted = responseIdx === 0;
+    /* Only store approvals — denials are NOT cached so "Try Again" re-prompts */
+    if (granted) storage.set(storeKey, true);
+    return granted;
+};
+
+/* Public wrapper: deduplicates concurrent requests for the same device so that
+   rapid getUserMedia calls never spawn multiple simultaneous dialogs. */
+const askForMediaAccess = (mediaType, parentWindow) => {
+    if (_pendingPermRequests.has(mediaType)) {
+        return _pendingPermRequests.get(mediaType);
+    }
+    const promise = _askForMediaAccessImpl(mediaType, parentWindow)
+        .finally(() => _pendingPermRequests.delete(mediaType));
+    _pendingPermRequests.set(mediaType, promise);
+    return promise;
 };
 
 const handlePermissionRequest = async (webContents, permission, callback, details) => {
@@ -270,18 +360,20 @@ const handlePermissionRequest = async (webContents, permission, callback, detail
             return callback(false);
         }
     }
-    const parentWindow = _windows.main; // if we ever allow media in non-main windows we'll also need to change this
+    const parentWindow = _windows.main;
     if (askForMicrophone) {
-        const microphoneResult = await askForMediaAccess('microphone');
-        if (!microphoneResult) {
-            displayPermissionDeniedWarning(parentWindow, 'microphone');
+        const micResult = await askForMediaAccess('microphone', parentWindow);
+        if (!micResult) {
+            // Clear Chromium's ContentSettings cache so "Try Again" reaches this handler next time.
+            // Without this, Chromium caches the denial and blocks getUserMedia before our handler fires.
+            webContents.session.clearStorageData({storages: ['permissions']}).catch(() => {});
             return callback(false);
         }
     }
     if (askForCamera) {
-        const cameraResult = await askForMediaAccess('camera');
-        if (!cameraResult) {
-            displayPermissionDeniedWarning(parentWindow, 'camera');
+        const camResult = await askForMediaAccess('camera', parentWindow);
+        if (!camResult) {
+            webContents.session.clearStorageData({storages: ['permissions']}).catch(() => {});
             return callback(false);
         }
     }
@@ -302,6 +394,38 @@ const createWindow = ({search = null, url = 'index.html', ...browserWindowOption
     const webContents = window.webContents;
 
     webContents.session.setPermissionRequestHandler(handlePermissionRequest);
+
+    // One-time migration: clear any BLOCK ContentSettings written by the old custom
+    // Allow/Deny dialog (which called callback(false) on Windows). This runs exactly
+    // once; after that Chromium accumulates GRANTs which persist and give device labels.
+    const PERM_MIGRATE_KEY = 'permissions.chromium_block_cleared_v1';
+    if (!storage.get(PERM_MIGRATE_KEY, false)) {
+        webContents.session.clearStorageData({storages: ['permissions']})
+            .then(() => storage.set(PERM_MIGRATE_KEY, true))
+            .catch(() => {});
+    }
+
+    /* Synchronous permission check (e.g. navigator.permissions.query()).
+       - 'not-determined' → return true so Chromium proceeds to call the request handler.
+       - 'granted' / 'denied' → return the stored value directly (no new dialog). */
+    webContents.session.setPermissionCheckHandler((wc, permission) => {
+        if (wc !== window.webContents) return false;
+        // Different Chromium versions surface media capture under different names.
+        // Accept all variants so a version mismatch never silently blocks getUserMedia.
+        const isMedia = permission === 'media' ||
+            permission === 'audioCapture'  || permission === 'audio_capture' ||
+            permission === 'videoCapture'  || permission === 'video_capture';
+        if (!isMedia) return false;
+        // If either device has an explicit stored grant, allow the synchronous check.
+        const camOk  = storage.get(MEDIA_PERM_KEYS.camera,     null) === true;
+        const micOk  = storage.get(MEDIA_PERM_KEYS.microphone, null) === true;
+        // Return true when at least one device is already granted, or when neither
+        // has been answered yet (so the request handler can ask the user).
+        const camSet  = storage.get(MEDIA_PERM_KEYS.camera,     null) !== null;
+        const micSet  = storage.get(MEDIA_PERM_KEYS.microphone, null) !== null;
+        if (camSet && micSet) return camOk || micOk; // both decided → use stored values
+        return true; // not yet decided → let request handler take over
+    });
 
     webContents.on('before-input-event', (event, input) => {
         if (input.code === devToolKey.code &&
@@ -664,6 +788,48 @@ app.on('ready', () => {
     });
 
     attachTelemetryIpcMain();
+
+    /* ══════════════════════════════════════════════════════════════
+       Device permission IPC handlers
+       Renderer can query and reset per-device permission choices.
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Return stored permission status: 'granted' | 'not-determined'
+       Denials are never stored (so user can retry), so only 'granted' is possible from storage. */
+    ipcMain.handle('get-media-permission', (event, mediaType) => {
+        const storeKey = MEDIA_PERM_KEYS[mediaType] || `permissions.${mediaType}`;
+        const stored = storage.get(storeKey, null);
+        if (stored === true) return 'granted';
+        /* Check OS-level status on Windows for display purposes */
+        if (process.platform === 'win32' && systemPreferences.getMediaAccessStatus) {
+            const osStatus = systemPreferences.getMediaAccessStatus(mediaType);
+            if (osStatus === 'denied') return 'denied';
+        }
+        return 'not-determined';
+    });
+
+    /* Clear stored app-level permission so the dialog appears again on next use.
+       Also flushes Chromium's ContentSettings cache so getUserMedia actually reaches
+       our handler instead of being blocked by a cached Chromium-level denial. */
+    ipcMain.handle('reset-media-permission', async (event, mediaType) => {
+        const storeKey = MEDIA_PERM_KEYS[mediaType] || `permissions.${mediaType}`;
+        storage.delete(storeKey);
+        if (_windows.main && !_windows.main.isDestroyed()) {
+            await _windows.main.webContents.session
+                .clearStorageData({storages: ['permissions']}).catch(() => {});
+        }
+        return true;
+    });
+
+    /* Reset ALL device permissions at once */
+    ipcMain.handle('reset-all-media-permissions', async () => {
+        Object.values(MEDIA_PERM_KEYS).forEach(k => storage.delete(k));
+        if (_windows.main && !_windows.main.isDestroyed()) {
+            await _windows.main.webContents.session
+                .clearStorageData({storages: ['permissions']}).catch(() => {});
+        }
+        return true;
+    });
 
     /* ══════════════════════════════════════════════════════════════
        ML filesystem IPC handlers

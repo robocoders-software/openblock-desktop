@@ -28,10 +28,10 @@ function download(filename) {
         const url = BASE_URL + filename;
         process.stdout.write(`  [dl]   ${filename} … `);
         const file = fs.createWriteStream(dest);
-        https.get(url, res => {
+        const req = https.get(url, res => {
             if (res.statusCode !== 200) {
                 file.close();
-                fs.unlinkSync(dest);
+                if (fs.existsSync(dest)) fs.unlinkSync(dest);
                 return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
             }
             res.pipe(file);
@@ -41,7 +41,14 @@ function download(filename) {
                     resolve();
                 });
             });
-        }).on('error', err => {
+        });
+        req.setTimeout(30000, () => {
+            req.destroy();
+            file.close();
+            if (fs.existsSync(dest)) fs.unlinkSync(dest);
+            reject(new Error(`Timeout downloading ${filename} — check your internet connection`));
+        });
+        req.on('error', err => {
             file.close();
             if (fs.existsSync(dest)) fs.unlinkSync(dest);
             reject(err);

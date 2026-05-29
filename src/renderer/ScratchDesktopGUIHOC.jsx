@@ -1,5 +1,6 @@
 import {ipcRenderer, clipboard} from 'electron';
 import * as remote from '@electron/remote/renderer';
+import DevicePermissionsModal from './device-permissions-modal.jsx';
 import showAppDialog from 'openblock-gui/src/lib/app-dialog-service.js';
 import bindAll from 'lodash.bindall';
 import omit from 'lodash.omit';
@@ -45,9 +46,10 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
     class ScratchDesktopGUIComponent extends React.Component {
         constructor (props) {
             super(props);
-            this.state = {projectTitle: ''};
+            this.state = {projectTitle: '', showDevicePermissionsModal: false};
             bindAll(this, [
                 'handleClickLogo',
+                'handleClickDevicePermissions',
                 'handleDirectSave',
                 'handleGoHome',
                 'handleNewBlocksProject',
@@ -142,6 +144,14 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
 
             ipcRenderer.on('setTitleFromSave', this.handleSetTitleFromSave);
             ipcRenderer.on('setTitleFromOpen', this.handleSetTitleFromOpen);
+
+            /* Main-process-initiated dialogs — render via custom AppDialog instead of native OS dialog */
+            this._onMainShowDialog = (event, opts) => showAppDialog(opts);
+            this._onMainShowPermDialog = (event, {replyId, ...opts}) => {
+                showAppDialog(opts).then(idx => ipcRenderer.send(`main-perm-reply-${replyId}`, idx));
+            };
+            ipcRenderer.on('main-show-dialog', this._onMainShowDialog);
+            ipcRenderer.on('main-show-perm-dialog', this._onMainShowPermDialog);
             ipcRenderer.on('setUpdate', (event, args) => {
                 this.props.onSetUpdate(args);
             });
@@ -183,7 +193,25 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             // Register new-project callback so app.jsx can trigger a fresh project
             // without unmounting/remounting this component (avoids storage re-init race)
             if (this.props.onRegisterNewProject) {
-                this.props.onRegisterNewProject(() => {
+                this.props.onRegisterNewProject(async () => {
+                    // If the current project has unsaved changes, prompt to save first
+                    if (this._projectDirty) {
+                        const choice = await showAppDialog({
+                            type: 'question',
+                            title: 'Unsaved Changes',
+                            message: 'You have unsaved changes.',
+                            detail: 'Save before exporting to a new project?',
+                            buttons: ['Save', "Don't Save", 'Cancel'],
+                            defaultId: 0
+                        });
+                        if (choice === 2) return false; // User cancelled — abort
+                        if (choice === 0) {
+                            await this.handleSaveBeforeOpen();
+                            // handleSaveBeforeOpen shows a Save As dialog; if the user
+                            // cancelled that dialog, _projectDirty stays true — abort.
+                            if (this._projectDirty) return false;
+                        }
+                    }
                     // Clear Redux project title and OS window title for the fresh project
                     this.handleUpdateProjectTitle('');
                     ipcRenderer.send('project-dirty-changed', {dirty: false, title: ''});
@@ -193,6 +221,8 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     this.forceUpdate();
                     // New project = old crash backup is no longer relevant
                     ipcRenderer.invoke('clear-crash-backup').catch(() => {});
+                    // Clear the saved file path so the new project doesn't inherit the old name
+                    ipcRenderer.invoke('clear-current-project-path').catch(() => {});
                     // Clear the active ML model reference so it doesn't auto-load into the new project
                     if (typeof window !== 'undefined') window.__openblockMLModel = null;
                     // Explicitly unload the teachableMachine extension from the VM so its blocks
@@ -205,6 +235,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     // Notify gui.jsx to reset only the transient loading/pending ML states
                     window.dispatchEvent(new CustomEvent('robocoders:new-project'));
                     this.props.onRequestNewProject();
+                    return true; // Proceeded — caller can now arm the pending export
                 });
             }
 
@@ -214,6 +245,8 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         componentWillUnmount () {
             ipcRenderer.removeListener('setTitleFromSave', this.handleSetTitleFromSave);
             ipcRenderer.removeListener('setTitleFromOpen', this.handleSetTitleFromOpen);
+            ipcRenderer.removeListener('main-show-dialog', this._onMainShowDialog);
+            ipcRenderer.removeListener('main-show-perm-dialog', this._onMainShowPermDialog);
             if (this._autoSaveInterval) {
                 clearInterval(this._autoSaveInterval);
                 this._autoSaveInterval = null;
@@ -339,6 +372,9 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         }
         handleClickInstallDriver () {
             ipcRenderer.send('installDriver');
+        }
+        handleClickDevicePermissions () {
+            this.setState({showDevicePermissionsModal: true});
         }
         handleProjectTelemetryEvent (event, metadata) {
             ipcRenderer.send(event, metadata);
@@ -494,7 +530,13 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         render () {
             const childProps = omit(this.props, Object.keys(ScratchDesktopGUIComponent.propTypes));
 
-            return (<WrappedComponent
+            return (<React.Fragment>
+                {this.state.showDevicePermissionsModal && (
+                    <DevicePermissionsModal
+                        onClose={() => this.setState({showDevicePermissionsModal: false})}
+                    />
+                )}
+                <WrappedComponent
                 canEditTitle
                 canChangeLanguage={false}
                 canModifyCloudData={false}
@@ -541,6 +583,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 onClickUpdate={this.handleClickUpdate}
                 onAbortUpdate={this.handleAbortUpdate}
                 onClickInstallDriver={this.handleClickInstallDriver}
+                onClickDevicePermissions={this.handleClickDevicePermissions}
                 onClickClearCache={this.handleClickClearCache}
                 onDirectSave={this.handleDirectSave}
                 onSaveBeforeOpen={this.handleSaveBeforeOpen}
@@ -555,7 +598,8 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
 
                 // allow passed-in props to override any of the above
                 {...childProps}
-            />);
+            />
+            </React.Fragment>);
         }
     }
 

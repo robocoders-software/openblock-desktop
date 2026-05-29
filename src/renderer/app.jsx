@@ -96,36 +96,39 @@ const AppRoot = () => {
     }, [blocksReady]);
 
     /* Called from ML Studio "Use in Blocks" */
-    const enterBlocksFromML = useCallback(() => {
-        const shouldCreateNew = cameFromHomeRef.current;
+    const enterBlocksFromML = useCallback(async () => {
         cameFromHomeRef.current = false;
         savedMLModelRef.current = null;
 
         const returnMode = preMlModeRef.current || 'blocks';
         preMlModeRef.current = 'blocks';
-        setBlocksReady(true);
-        setMode(returnMode);
 
         if (!blocksReady) {
-            // WrappedGui is mounting fresh and will load a blank project on mount.
-            // Pre-arm the pending export so the PROJECT_LOADED handler in gui.jsx
-            // picks it up and fires robocoders:ml-export-to-blocks once the blank
-            // project finishes loading — same mechanism as the shouldCreateNew path below.
+            // WrappedGui is mounting fresh — no existing project to check dirty state for.
+            setBlocksReady(true);
+            setMode(returnMode);
             window.__openblockMLPendingExport = window.__openblockMLModel || null;
             return;
         }
 
-        if (shouldCreateNew && newProjectCbRef.current) {
-            // User came via home screen → ML → export: create a blank project first.
-            // We signal gui.jsx's PROJECT_LOADED handler to trigger the export once the
-            // blank project is fully loaded — avoids the race where PROJECT_LOADED fires
-            // after the export event and clears the model, compressing/breaking the blocks.
-            window.__openblockMLPendingExport = window.__openblockMLModel || null;
-            newProjectCbRef.current(); // resets project, clears __openblockMLModel, unloads extension
-            // gui.jsx's PROJECT_LOADED handler picks up __openblockMLPendingExport and
-            // restores the model + fires robocoders:ml-export-to-blocks from there.
+        if (newProjectCbRef.current) {
+            // Await the callback: it will show a "save unsaved changes?" dialog if
+            // the current project is dirty, then create the new project.
+            // Returns false if the user cancelled — in that case stay in ML.
+            const pendingModel = window.__openblockMLModel || null;
+            const proceeded = await newProjectCbRef.current();
+            if (!proceeded) return; // user cancelled — remain in ML environment
+
+            // Switch to blocks AFTER the save dialog is resolved so that if the
+            // user cancels, they stay in the ML view without any mode flicker.
+            setBlocksReady(true);
+            setMode(returnMode);
+            // Arm pending export — PROJECT_LOADED in gui.jsx picks this up and fires
+            // robocoders:ml-export-to-blocks once the blank project finishes loading.
+            window.__openblockMLPendingExport = pendingModel;
         } else {
-            // User came via "Open ML Env" from an existing project — export into it.
+            setBlocksReady(true);
+            setMode(returnMode);
             window.dispatchEvent(new CustomEvent('robocoders:ml-export-to-blocks'));
         }
     }, [blocksReady]);

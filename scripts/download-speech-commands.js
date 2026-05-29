@@ -32,10 +32,10 @@ function download (url, dest) {
         process.stdout.write(`  [dl]   ${path.basename(dest)} … `);
         fs.mkdirSync(path.dirname(dest), {recursive: true});
         const file = fs.createWriteStream(dest);
-        https.get(url, res => {
+        const req = https.get(url, res => {
             if (res.statusCode !== 200) {
                 file.close();
-                fs.unlinkSync(dest);
+                if (fs.existsSync(dest)) fs.unlinkSync(dest);
                 return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
             }
             res.pipe(file);
@@ -43,7 +43,14 @@ function download (url, dest) {
                 process.stdout.write(`done (${fs.statSync(dest).size} bytes)\n`);
                 resolve();
             }));
-        }).on('error', err => {
+        });
+        req.setTimeout(30000, () => {
+            req.destroy();
+            file.close();
+            if (fs.existsSync(dest)) fs.unlinkSync(dest);
+            reject(new Error(`Timeout downloading ${path.basename(dest)} — check your internet connection`));
+        });
+        req.on('error', err => {
             file.close();
             if (fs.existsSync(dest)) fs.unlinkSync(dest);
             reject(err);
