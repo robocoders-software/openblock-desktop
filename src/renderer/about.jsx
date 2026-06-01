@@ -13,15 +13,8 @@ const AboutElement = () => (
         /></div>
         <div className={styles.aboutText}>
             <h2>{productName}</h2>
-            Version {version}
-            <table className={styles.aboutDetails}><tbody>
-                {
-                    ['Electron', 'Chrome', 'Node'].map(component => {
-                        const componentVersion = process.versions[component.toLowerCase()];
-                        return <tr key={component}><td>{component}</td><td>{componentVersion}</td></tr>;
-                    })
-                }
-            </tbody></table>
+            <div>{'Version '}{version}</div>
+            <div className={styles.aboutCopyright}>{'© YugMinds Private Limited'}</div>
         </div>
     </div>
 );

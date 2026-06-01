@@ -12,12 +12,12 @@ const copyrightInformations = [
     {
         id: 'RoboCoders',
         logo: OpenBlockLogo,
-        link: 'https://www.openblock.cc/',
+        link: 'https://yugminds.com/',
         license: 'MIT'
     },
     {
-        id: 'Scratch Foundation',
-        link: 'https://www.scratchfoundation.org/',
+        id: 'Yugminds Foundation',
+        link: 'https://yugminds.com/',
         logo: ScratchFoundationLogo,
         license: 'BSD-3-Clause'
     }

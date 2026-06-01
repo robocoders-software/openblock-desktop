@@ -1067,7 +1067,7 @@ app.on('ready', () => {
        Updates _currentProjectFilePath so subsequent Ctrl+S hits the same file.
        Uses atomic write (temp → rename) to prevent corruption on crash.
        Optional thumbnailData (Buffer) is stored as thumbnail.png inside the ZIP. */
-    ipcMain.handle('save-project-to-path', async (event, filePath, projectData, thumbnailData) => {
+    ipcMain.handle('save-project-to-path', async (event, filePath, projectData, thumbnailData, oldFilePath) => {
         if (!filePath) return {success: false, error: 'no-path'};
         try {
             const JSZip = require('jszip');
@@ -1103,6 +1103,10 @@ app.on('ready', () => {
 
             const newBuf = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
             await atomicWriteFile(filePath, newBuf);
+            // If renaming: delete the old file after the new one is safely written
+            if (oldFilePath && oldFilePath !== filePath) {
+                try { await fs.unlink(oldFilePath); } catch (_) { /* best-effort */ }
+            }
             _currentProjectFilePath = filePath;
             const title = path.basename(filePath, path.extname(filePath));
             return {success: true, title};

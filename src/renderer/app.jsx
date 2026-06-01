@@ -55,6 +55,22 @@ const AppRoot = () => {
         return () => window.removeEventListener('robocoders:open-ml', handler);
     }, []);
 
+    /* The blocks GUI is mounted once and hidden with display:none when not active.
+       While hidden its container is 0×0, so Blockly's workspace/flyout lose their
+       sizing. Whenever we switch back to the blocks/robotics editor, dispatch a
+       resize after the div is shown so Blockly re-measures and the palette/flyout
+       render correctly. Two rAFs ensure the browser has laid the container out
+       (display:none → block) before we measure. This keeps re-entry as robust as
+       the first-mount path and prevents the "blocks not loaded" issue recurring. */
+    useEffect(() => {
+        if (!blocksReady) return;
+        if (mode !== 'blocks' && mode !== 'robotics') return;
+        const raf1 = requestAnimationFrame(() => {
+            requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+        });
+        return () => cancelAnimationFrame(raf1);
+    }, [mode, blocksReady]);
+
     /* If the user deletes the model that was active in the blocks editor, don't restore it on Back */
     useEffect(() => {
         const handler = e => {
@@ -181,6 +197,14 @@ const AppRoot = () => {
                 }}>
                     <WrappedGui
                         onGoHome={() => setMode('home')}
+                        onCancelLoader={() => {
+                            // The project loader stalled — unmount the GUI so it
+                            // remounts fresh next time the user enters Blocks.
+                            // Just hiding it (display:none) leaves Redux in the stuck
+                            // loading state; newProjectCbRef() cannot escape it.
+                            setBlocksReady(false);
+                            setMode('home');
+                        }}
                         onRegisterNewProject={cb => {
                             newProjectCbRef.current = cb;
                             if (window.__openblockRoboticsOnReady) {

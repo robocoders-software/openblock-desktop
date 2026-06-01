@@ -39,6 +39,12 @@ a:active, a:hover {
 
 }
 
+.aboutCopyright {
+    font-size: small;
+    margin-top: 0.4rem;
+    opacity: 0.85;
+}
+
 .aboutFooter {
     font-size: small;
 }

@@ -53,6 +53,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 'handleDirectSave',
                 'handleGoHome',
                 'handleNewBlocksProject',
+                'handleNewRoboticsProject',
                 'handleProjectDirtyChanged',
                 'handleSaveBeforeOpen',
                 'handleProjectTelemetryEvent',
@@ -60,6 +61,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 'handleSetTitleFromSave',
                 'handleShowMessageBox',
                 'handleStorageInit',
+                '_autoRenameIfNeeded',
                 'handleUpdateProjectTitle'
             ]);
             this.props.onLoadingStarted();
@@ -167,6 +169,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             // Track last-saved time and sync dirty state to window title
             this._lastSavedAt = null;
             this._projectDirty = false;
+            this._autoRenaming = false; // guard against concurrent auto-rename calls
 
             // Auto-save to the current file every 2 minutes when dirty and a file path exists
             const AUTO_SAVE_INTERVAL_MS = 2 * 60 * 1000;
@@ -352,6 +355,38 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             window.dispatchEvent(new CustomEvent('robocoders:new-project'));
             this.props.onRequestNewProject();
         }
+        async handleNewRoboticsProject () {
+            if (this._projectDirty) {
+                const choice = await showAppDialog({
+                    type: 'question',
+                    title: 'Unsaved Changes',
+                    message: 'You have unsaved changes.',
+                    detail: 'Save your project before opening the Robotics Environment?',
+                    buttons: ['Save', "Don't Save", 'Cancel'],
+                    defaultId: 0
+                });
+                if (choice === 2) return false;
+                if (choice === 0) {
+                    await this.handleSaveBeforeOpen();
+                    if (this._projectDirty) return false;
+                }
+            }
+            this.handleUpdateProjectTitle('');
+            ipcRenderer.send('project-dirty-changed', {dirty: false, title: ''});
+            this._lastSavedAt = null;
+            this._projectDirty = false;
+            this.forceUpdate();
+            ipcRenderer.invoke('clear-crash-backup').catch(() => {});
+            ipcRenderer.invoke('clear-current-project-path').catch(() => {});
+            if (typeof window !== 'undefined') window.__openblockMLModel = null;
+            if (this.props.vm && this.props.vm.extensionManager &&
+                this.props.vm.extensionManager.isExtensionLoaded('teachableMachine')) {
+                this.props.vm.extensionManager.unloadExtension('teachableMachine');
+            }
+            window.dispatchEvent(new CustomEvent('robocoders:new-project'));
+            this.props.onRequestNewProject();
+            return true;
+        }
         handleClickAbout () {
             ipcRenderer.send('open-about-window');
         }
@@ -458,23 +493,45 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     this._captureThumbnail()
                 ]);
                 const arrayBuf = await content.arrayBuffer();
-                const result   = await ipcRenderer.invoke(
-                    'save-project-to-current-file',
-                    Buffer.from(arrayBuf),
-                    thumbnail
-                );
+                const currentTitle = (this.state && this.state.projectTitle) ||
+                    this.props.reduxProjectTitle || '';
+
+                // Detect rename: if the user changed the in-app title, the file on disk
+                // should be renamed to match. Compute the new path in the same directory.
+                const pathModule = window.require('path');
+                const ext        = pathModule.extname(hasPath);
+                const dir        = pathModule.dirname(hasPath);
+                const fileBasename = pathModule.basename(hasPath, ext);
+                const isRenamed  = currentTitle && currentTitle !== fileBasename;
+                const savePath   = isRenamed
+                    ? pathModule.join(dir, `${currentTitle}${ext}`)
+                    : hasPath;
+
+                const result = isRenamed
+                    ? await ipcRenderer.invoke(
+                        'save-project-to-path',
+                        savePath,
+                        Buffer.from(arrayBuf),
+                        thumbnail,
+                        hasPath  // old path — deleted after successful write (rename)
+                    )
+                    : await ipcRenderer.invoke(
+                        'save-project-to-current-file',
+                        Buffer.from(arrayBuf),
+                        thumbnail
+                    );
+
                 if (result.success) {
-                    this.handleUpdateProjectTitle(result.title);
-                    // Record successful save — clears dirty indicator and last-saved timestamp
+                    const savedTitle = currentTitle || result.title;
+                    this.handleUpdateProjectTitle(savedTitle);
                     this._lastSavedAt = Date.now();
                     this._projectDirty = false;
-                    ipcRenderer.send('project-dirty-changed', {dirty: false, title: result.title});
+                    ipcRenderer.send('project-dirty-changed', {dirty: false, title: savedTitle});
                     ipcRenderer.invoke('clear-crash-backup').catch(() => {});
-                    ipcRenderer.invoke('add-recent-file', hasPath, result.title).catch(() => {});
+                    ipcRenderer.invoke('add-recent-file', savePath, savedTitle).catch(() => {});
                     this.forceUpdate();
                 } else {
                     log.warn('[renderer] handleDirectSave failed:', result.error);
-                    /* Write failed — fall back to Save As dialog */
                     downloadProjectFallback();
                 }
             } catch (e) {
@@ -508,6 +565,28 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             this.setState({projectTitle: newTitle});
             // Also sync to Redux so project-saver and title input stay consistent
             this.props.onSetProjectTitle(newTitle);
+            // Sync the OS window title immediately — handleProjectDirtyChanged only fires
+            // when dirty state CHANGES, so if the project is already dirty the window title
+            // would never update on rename without this explicit send.
+            ipcRenderer.send('project-dirty-changed', {dirty: this._projectDirty, title: newTitle});
+            this.forceUpdate();
+            // When the user types a new name and presses Enter, auto-rename the file on disk
+            // so both the Save icon and the Enter key trigger a rename.
+            this._autoRenameIfNeeded(newTitle);
+        }
+        async _autoRenameIfNeeded (newTitle) {
+            if (!newTitle || this._autoRenaming) return;
+            const currentPath = await ipcRenderer.invoke('get-current-project-path');
+            if (!currentPath) return; // not saved yet — nothing to rename
+            const pathModule = window.require('path');
+            const fileBasename = pathModule.basename(currentPath, pathModule.extname(currentPath));
+            if (newTitle === fileBasename) return; // title matches filename — no rename needed
+            this._autoRenaming = true;
+            try {
+                await this.handleDirectSave(() => {});
+            } finally {
+                this._autoRenaming = false;
+            }
         }
         handleShowMessageBox (type, message) {
             if (type === MessageBoxType.confirm) {
@@ -578,6 +657,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 ]}
                 onGoHome={this.handleGoHome}
                 onNewBlocksProject={this.handleNewBlocksProject}
+                onNewRoboticsProject={this.handleNewRoboticsProject}
                 onClickLogo={this.handleClickLogo}
                 onClickCheckUpdate={this.handleClickCheckUpdate}
                 onClickUpdate={this.handleClickUpdate}

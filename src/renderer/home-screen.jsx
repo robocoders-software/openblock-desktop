@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React, {useState} from 'react';
 import PropTypes from 'prop-types';
 import styles from './home-screen.css';
 
@@ -103,18 +103,30 @@ const BOTTOM_SECTIONS = [
 ];
 
 /* ─── ModeCard ───────────────────────────────────── */
-const ModeCard = ({mode, onClick}) => (
+const ModeCard = ({mode, onClick, isLoading, isDisabled}) => (
     <div
-        className={styles.modeCard}
-        onClick={() => onClick(mode.id)}
+        className={[
+            styles.modeCard,
+            isLoading  ? styles.modeCardLoading  : '',
+            isDisabled ? styles.modeCardDisabled : ''
+        ].join(' ')}
+        onClick={() => !isDisabled && !isLoading && onClick(mode.id)}
         role="button"
-        tabIndex={0}
-        onKeyDown={e => e.key === 'Enter' && onClick(mode.id)}
+        tabIndex={isDisabled ? -1 : 0}
+        onKeyDown={e => e.key === 'Enter' && !isDisabled && !isLoading && onClick(mode.id)}
+        aria-disabled={isDisabled || isLoading}
     >
         {mode.age && <span className={styles.ageBadge}>{mode.age}</span>}
         <div className={styles.modeIcon}>{mode.icon}</div>
         <p className={styles.modeTitle}>{mode.title}</p>
         <p className={styles.modeDescription}>{mode.description}</p>
+
+        {isLoading && (
+            <div className={styles.loadingOverlay}>
+                <div className={styles.spinner} />
+                <span className={styles.loadingLabel}>Loading…</span>
+            </div>
+        )}
     </div>
 );
 
@@ -126,43 +138,80 @@ ModeCard.propTypes = {
         age: PropTypes.string,
         icon: PropTypes.node
     }).isRequired,
-    onClick: PropTypes.func.isRequired
+    onClick: PropTypes.func.isRequired,
+    isLoading: PropTypes.bool,
+    isDisabled: PropTypes.bool
+};
+
+ModeCard.defaultProps = {
+    isLoading: false,
+    isDisabled: false
 };
 
 /* ─── HomeScreen ─────────────────────────────────── */
-const HomeScreen = ({onSelectMode}) => (
-    <div className={styles.homeWrapper}>
-        <div className={styles.card}>
-            <h1 className={styles.heading}>What would you like to do?</h1>
+const HomeScreen = ({onSelectMode}) => {
+    const [loadingId, setLoadingId] = useState(null);
 
-            {/* Block Coding + Robotics side by side, each with its own title */}
-            <div className={styles.topRow}>
-                {TOP_SECTIONS.map(({title, cards}) => (
+    const handleSelect = id => {
+        if (loadingId) return;
+        setLoadingId(id);
+        // Two-frame delay: first frame paints the spinner overlay,
+        // second frame lets the browser composite it before the heavy
+        // navigation/initialization work starts on the main thread.
+        // setTimeout fallback ensures navigation happens even if RAF is
+        // throttled (e.g. window briefly backgrounded during the click).
+        let navigated = false;
+        const navigate = () => { if (!navigated) { navigated = true; onSelectMode(id); } };
+        requestAnimationFrame(() => requestAnimationFrame(navigate));
+        setTimeout(navigate, 300);
+    };
+
+    return (
+        <div className={styles.homeWrapper}>
+            <div className={styles.card}>
+                <h1 className={styles.heading}>What would you like to do?</h1>
+
+                {/* Block Coding + Robotics side by side */}
+                <div className={styles.topRow}>
+                    {TOP_SECTIONS.map(({title, cards}) => (
+                        <div key={title} className={styles.section}>
+                            <h2 className={styles.sectionTitle}>{title}</h2>
+                            <div className={styles.modeGrid}>
+                                {cards.map(m => (
+                                    <ModeCard
+                                        key={m.id}
+                                        mode={m}
+                                        onClick={handleSelect}
+                                        isLoading={loadingId === m.id}
+                                        isDisabled={loadingId !== null && loadingId !== m.id}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* ML below, full width */}
+                {BOTTOM_SECTIONS.map(({title, cards}) => (
                     <div key={title} className={styles.section}>
                         <h2 className={styles.sectionTitle}>{title}</h2>
                         <div className={styles.modeGrid}>
                             {cards.map(m => (
-                                <ModeCard key={m.id} mode={m} onClick={onSelectMode} />
+                                <ModeCard
+                                    key={m.id}
+                                    mode={m}
+                                    onClick={handleSelect}
+                                    isLoading={loadingId === m.id}
+                                    isDisabled={loadingId !== null && loadingId !== m.id}
+                                />
                             ))}
                         </div>
                     </div>
                 ))}
             </div>
-
-            {/* ML below, full width */}
-            {BOTTOM_SECTIONS.map(({title, cards}) => (
-                <div key={title} className={styles.section}>
-                    <h2 className={styles.sectionTitle}>{title}</h2>
-                    <div className={styles.modeGrid}>
-                        {cards.map(m => (
-                            <ModeCard key={m.id} mode={m} onClick={onSelectMode} />
-                        ))}
-                    </div>
-                </div>
-            ))}
         </div>
-    </div>
-);
+    );
+};
 
 HomeScreen.propTypes = {
     onSelectMode: PropTypes.func.isRequired

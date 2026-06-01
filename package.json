@@ -1,9 +1,9 @@
 {
   "name": "RoboCoders-studio-desktop",
-  "productName": "RoboCoders-studio-Desktop",
-  "description": "RoboCoders-studio as a self-contained desktop application",
-  "author": "RoboCoders-studio.cc Team <contact@robo.coders.studio> (http://www.robo.coders.studio/)",
-  "version": "2.6.3",
+  "productName": "RoboCoders Studio",
+  "description": "RoboCoders Studio — a self-contained desktop application by YugMinds Private Limited",
+  "author": "YugMinds Private Limited <yugminds@gmail.com>",
+  "version": "1.0.0",
   "license": "MIT",
   "scripts": {
     "postinstall": "patch-package && electron-builder install-app-deps",

@@ -6,19 +6,17 @@ import styles from './privacy.css';
 const PrivacyElement = () => (
     <div className={styles.privacyBox}>
         <h1>Privacy Policy</h1>
-        <i>The RoboCoders-studio Privacy Policy was last updated: October 5, 2020</i>
+        <i>The RoboCoders Studio Privacy Policy was last updated: June 2, 2026</i>
         <p>
-            The RoboCoders-studio Team (&ldquo;RoboCoders-studio&rdquo;, &ldquo;we&rdquo; or &ldquo;us&rdquo;) understands how
+            YugMinds Private Limited (&ldquo;YugMinds&rdquo;, &ldquo;we&rdquo; or &ldquo;us&rdquo;) understands how
             important privacy is to our community. We wrote this Privacy Policy to explain what Personal Information
             (&ldquo;Information&rdquo;) we collect through our offline editor (the &ldquo;<a
-                href="https://wiki.openblock.cc/zh/download-software/"
+                href="https://yugminds.com/"
                 target="_blank"
                 rel="noopener noreferrer"
             >RoboCoders Studio App</a>&rdquo;), how we use, process, and share it, and what we&apos;re doing to keep it safe. It
             also tells you about your rights and choices with respect to your Personal Information, and how you can <a
-                href="https://www.openblock.cc/contact-us/"
-                target="_blank"
-                rel="noopener noreferrer"
+                href="mailto:yugminds@gmail.com"
             >contact us</a> if you have any questions or concerns.
         </p>
         <h2>What Information Does RoboCoders-studio Collect About Me?</h2>
@@ -40,7 +38,7 @@ const PrivacyElement = () => (
             </li>
             <li>
                 <b>Legal</b> - We may use your Information to enforce our <a
-                    href="https://www.openblock.cc/terms-of-use"
+                    href="https://yugminds.com/terms"
                     target="_blank"
                     rel="noopener noreferrer"
                 >Terms of Use</a>, to defend our legal rights, and to comply with our legal obligations and internal
@@ -89,8 +87,7 @@ const PrivacyElement = () => (
         </ul>
         <h2>Children and Student Privacy</h2>
         <p>
-            The RoboCoders-studio Team is a nonprofit organization. As such, the Children&apos;s Online Privacy
-            Protection Act (COPPA) does not apply to RoboCoders-studio. Nevertheless, RoboCoders-studio takes children&apos;s privacy
+            YugMinds Private Limited takes children&apos;s privacy seriously. Nevertheless, RoboCoders-studio takes children&apos;s privacy
             seriously. RoboCoders-studio collects only minimal information from its users, and only uses and discloses
             information to provide the services and for limited other purposes, such as research, as described in this
             Privacy Policy.
@@ -126,10 +123,10 @@ const PrivacyElement = () => (
                 have objected to our processing. In some situations, we may need to retain your Information due to
                 legal obligations or for litigation purposes. If you want to have all of your Information removed from
                 our servers, please contact <a
-                    href="mailto:help@RoboCoders-studio.cc"
+                    href="mailto:yugminds@gmail.com"
                     target="_blank"
                     rel="noopener noreferrer"
-                >help@RoboCoders-studio.cc</a> for assistance.
+                >yugminds@gmail.com</a> for assistance.
             </li>
             <li>
                 <b>Restriction Of Processing</b> - You may request that we restrict processing of your Information
@@ -151,10 +148,10 @@ const PrivacyElement = () => (
             excessive, or if the request is likely to adversely affect the rights and freedoms of others, prejudice the
             execution or enforcement of the law, interfere with pending or future litigation, or infringe applicable
             law. To submit a request to exercise your rights, please contact <a
-                href="mailto:help@RoboCoders-studio.cc"
+                href="mailto:yugminds@gmail.com"
                 target="_blank"
                 rel="noopener noreferrer"
-            >help@RoboCoders-studio.cc</a> for assistance.
+            >yugminds@gmail.com</a> for assistance.
         </p>
         <h2>Data Retention</h2>
         <p>
@@ -198,19 +195,16 @@ const PrivacyElement = () => (
             The RoboCoders-studio Team is the entity responsible for the processing of your Information. If you have any
             questions about this Privacy Policy, or if you would like to exercise your rights to your Information, you
             may contact us at <a
-                href="mailto:help@RoboCoders-studio.cc"
+                href="mailto:yugminds@gmail.com"
                 target="_blank"
                 rel="noopener noreferrer"
-            >help@RoboCoders-studio.cc</a> or via mail at:
+            >yugminds@gmail.com</a> or via mail at:
         </p>
         <div className="vcard">
-            <div className="org">RoboCoders-studio Team</div>
+            <div className="org">YugMinds Private Limited</div>
             <div className="fn">ATTN: Privacy Policy</div>
             <div className="adr">
-                <div className="street-address">Datang Street</div>
-                <span className="locality">Shenzhen</span>, <span className="region">Guangdong</span> <span
-                    className="postal-code"
-                >518110</span>
+                <a href="mailto:yugminds@gmail.com">yugminds@gmail.com</a>
             </div>
         </div>
     </div>
