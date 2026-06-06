@@ -1,0 +1,228 @@
+/* ── Activation Screen ─────────────────────────────────── */
+
+.wrapper {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #001E57 0%, #003A8C 60%, #004AAD 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    overflow-y: auto;
+}
+
+/* ── Outer white card ── */
+.card {
+    background: white;
+    border-radius: 20px;
+    padding: 40px 44px;
+    width: 520px;
+    max-width: 95vw;
+    margin: 24px 0;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    text-align: center;
+}
+
+/* ── Logo ── */
+.logo {
+    width: 64px;
+    height: 64px;
+    margin: 0 auto 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.logo img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+/* ── Heading ── */
+.heading {
+    font-size: 22px;
+    font-weight: 700;
+    color: white;
+    background: linear-gradient(135deg, #004AAD, #003A8C);
+    border-radius: 12px;
+    padding: 16px 24px;
+    margin: 0 0 28px;
+}
+
+.subtitle {
+    font-size: 13px;
+    color: #666;
+    margin: -16px 0 28px;
+    line-height: 1.5;
+}
+
+/* ── Field label ── */
+.fieldLabel {
+    font-size: 11px;
+    font-weight: 700;
+    color: #003A8C;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    text-align: left;
+    margin-bottom: 6px;
+}
+
+/* ── Machine ID box ── */
+.machineIdBox {
+    background: #F0F5FF;
+    border: 1.5px solid #B8D0FF;
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 20px;
+    font-weight: 700;
+    color: #003A8C;
+    letter-spacing: 4px;
+    margin-bottom: 8px;
+    text-align: center;
+    cursor: default;
+    user-select: all;
+}
+
+.copyHint {
+    font-size: 11px;
+    color: #999;
+    margin: 0 0 24px;
+    text-align: right;
+}
+
+.copyHint button {
+    background: none;
+    border: none;
+    color: #004AAD;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+}
+
+/* ── Key input ── */
+.keyInput {
+    width: 100%;
+    padding: 13px 14px;
+    background: #F8F9FF;
+    border: 1.5px solid #C8D8F0;
+    border-radius: 10px;
+    color: #222;
+    font-size: 14px;
+    font-family: "Courier New", Courier, monospace;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    margin-bottom: 20px;
+    letter-spacing: 1px;
+    box-sizing: border-box;
+}
+
+.keyInput:focus {
+    border-color: #004AAD;
+    box-shadow: 0 0 0 3px rgba(0, 74, 173, 0.15);
+}
+
+.keyInput::placeholder {
+    color: #aab;
+    letter-spacing: 0;
+}
+
+/* ── Activate button ── */
+.activateBtn {
+    width: 100%;
+    padding: 14px;
+    background: #004AAD;
+    border: none;
+    border-radius: 10px;
+    color: white;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    letter-spacing: 0.3px;
+}
+
+.activateBtn:hover:not(:disabled) {
+    background: #003A8C;
+    box-shadow: 0 4px 16px rgba(0, 74, 173, 0.35);
+}
+
+.activateBtn:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+.activateBtn:disabled {
+    background: #B0C4E8;
+    cursor: not-allowed;
+}
+
+/* ── Spinner inside button ── */
+.btnSpinner {
+    width: 18px;
+    height: 18px;
+    border: 3px solid rgba(255, 255, 255, 0.35);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.65s linear infinite;
+    flex-shrink: 0;
+}
+
+/* ── Message banners ── */
+.message {
+    margin-top: 16px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: left;
+}
+
+.messageError {
+    background: #FFF0F0;
+    color: #C0392B;
+    border: 1.5px solid #F5B7B1;
+}
+
+.messageSuccess {
+    background: #F0FFF4;
+    color: #1E8449;
+    border: 1.5px solid #A9DFBF;
+}
+
+.messageWarning {
+    background: #FFFBF0;
+    color: #935A00;
+    border: 1.5px solid #FAD7A0;
+}
+
+/* ── Blocked banner shown at top when expired/tampered on startup ── */
+.blockedBanner {
+    background: #FFF3CD;
+    border: 1.5px solid #FFBA08;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 22px;
+    font-size: 13px;
+    color: #5D3A00;
+    line-height: 1.5;
+    text-align: left;
+}
+
+.blockedBanner strong {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    color: #7D4E00;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}

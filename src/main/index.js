@@ -12,6 +12,7 @@ import MacOSMenu from './MacOSMenu';
 import log from '../common/log.js';
 import {productName, version} from '../../package.json';
 import './board-manager.js';
+import {createLicenseManager} from './license/license-manager';
 
 import {v4 as uuidv4} from 'uuid';
 import ElectronStore from 'electron-store';
@@ -31,6 +32,10 @@ import {
 
 const storage = new ElectronStore();
 let desktopLink;
+
+/* ── License manager ── */
+let _license;
+let _licenseStartupResult = null;
 
 /* ── ML filesystem root ── */
 const mlDir = projectId => path.join(app.getPath('userData'), 'ml-projects', projectId);
@@ -750,6 +755,28 @@ protocol.registerSchemesAsPrivileged([{
 // create main BrowserWindow when electron is ready
 app.on('ready', () => {
     desktopLink = new DesktopLink();
+
+    /* ── License: run startup check once and cache the result ── */
+    _license = createLicenseManager(path.join(app.getPath('userData'), 'license.dat'));
+    _licenseStartupResult = _license.checkStartup();
+
+    ipcMain.handle('license-check-startup', () => _licenseStartupResult);
+    ipcMain.handle('get-machine-id',        () => _license.getMachineId());
+    ipcMain.handle('activate-license', (_event, rawKey) => {
+        const result = _license.activate(rawKey);
+        if (result.valid) {
+            // Refresh the cached result so future calls to license-check-startup reflect the new activation
+            _licenseStartupResult = _license.checkStartup();
+        }
+        return result;
+    });
+    ipcMain.handle('get-license-info',  () => _license.getLicenseInfo());
+    ipcMain.handle('get-saved-key',     () => _license.getSavedKey());
+    ipcMain.handle('delete-license',    () => {
+        const deleted = _license.deleteLicense();
+        _licenseStartupResult = _license.checkStartup();
+        return {deleted};
+    });
 
     // Serve external-resources/* via robocoders-resource:// — no HTTP server needed.
     // Works offline, no port conflicts, files read directly from disk.

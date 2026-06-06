@@ -1,5 +1,6 @@
 import React, {useState, useRef, useCallback, useEffect} from 'react';
 import {compose} from 'redux';
+import {ipcRenderer} from 'electron';
 import GUI from 'openblock-gui/src/index';
 import AppStateHOC from 'openblock-gui/src/lib/app-state-hoc.jsx';
 import MLStudioApp from 'openblock-ml-studio';
@@ -7,6 +8,7 @@ import MLStudioApp from 'openblock-ml-studio';
 import ScratchDesktopAppStateHOC from './ScratchDesktopAppStateHOC.jsx';
 import ScratchDesktopGUIHOC from './ScratchDesktopGUIHOC.jsx';
 import HomeScreen from './home-screen.jsx';
+import ActivationScreen from './activation-screen.jsx';
 import styles from './app.css';
 
 /* ── The full blocks GUI ── */
@@ -28,7 +30,9 @@ GUI.setAppElement(appTarget);
    requestNewProject() via a registered callback instead.
 ──────────────────────────────────────────────────── */
 const AppRoot = () => {
-    const [mode, setMode] = useState('home'); // 'home' | 'blocks' | 'robotics' | 'ml'
+    // 'checking' while license IPC is in-flight; 'activation' if not licensed
+    const [mode, setMode] = useState('checking'); // 'checking' | 'activation' | 'home' | 'blocks' | 'robotics' | 'ml'
+    const [licenseBlockedReason, setLicenseBlockedReason] = useState(null);
     const [blocksReady, setBlocksReady] = useState(false);
     // Callback registered by ScratchDesktopGUIHOC once the editor is ready
     const newProjectCbRef = useRef(null);
@@ -42,6 +46,22 @@ const AppRoot = () => {
     // The editor mode ('blocks' | 'robotics') active before entering ML Studio.
     // Used by ML Back and enterBlocksFromML to return to the right env.
     const preMlModeRef = useRef('blocks');
+
+    /* License check — runs once on mount before showing any UI */
+    useEffect(() => {
+        ipcRenderer.invoke('license-check-startup').then(result => {
+            if (result && result.ok) {
+                setMode('home');
+            } else {
+                if (result && result.activated && result.reason) {
+                    setLicenseBlockedReason(result.reason);
+                }
+                setMode('activation');
+            }
+        }).catch(() => {
+            setMode('activation');
+        });
+    }, []);
 
     /* Listen for "Open ML Env" from within the blocks editor */
     useEffect(() => {
@@ -151,6 +171,16 @@ const AppRoot = () => {
 
     return (
         <>
+            {mode === 'checking' && null /* blank while IPC resolves (fast, sub-frame) */}
+            {mode === 'activation' && (
+                <ActivationScreen
+                    blockedReason={licenseBlockedReason}
+                    onActivated={() => {
+                        setLicenseBlockedReason(null);
+                        setMode('home');
+                    }}
+                />
+            )}
             {mode === 'home' && (
                 <HomeScreen onSelectMode={id => {
                     if (id === 'blocks') {
