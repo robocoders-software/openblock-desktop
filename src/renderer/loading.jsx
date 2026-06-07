@@ -13,6 +13,12 @@ const LoadingElement = () => (
                 className={styles.loadingLogo}
             />
         </div>
+        <p className={styles.loadingTagline}>
+            {'Code • Build • Innovate'}
+            <br />
+            {'with '}
+            <span className={styles.loadingBrand}>{'RoboCoders Studio'}</span>
+        </p>
     </div>
 );
 

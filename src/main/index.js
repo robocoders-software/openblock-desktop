@@ -931,8 +931,20 @@ app.on('ready', () => {
             const raw = await zip.files[metaKey].async('string');
             const meta = JSON.parse(raw);
             if (!meta || !meta.id) return {hasMLData: false};
-            const exists = await fs.pathExists(mlDir(meta.id));
-            return {hasMLData: true, mlDeleted: !exists, projectId: meta.id, projectName: meta.name || ''};
+
+            // The model is available if it travels INSIDE the .rc bundle OR already exists
+            // on local disk. The bundle is self-contained: bundleMLDir() packs the entire
+            // ml-projects/<id>/ directory (training data + trained weights + labels) into
+            // the .rc, and ml-get-loaded-data extracts it on load. So a fresh machine that
+            // has never seen this project is NOT a "deleted model" — the model ships in the
+            // file. Only warn when neither the bundle nor local disk carries the model data.
+            // (Count ml/ payload files beyond the single project.json: more than one means
+            //  the actual model/training files are present in the bundle.)
+            const bundleHasModel = Object.keys(zip.files)
+                .filter(k => k.startsWith('ml/') && !zip.files[k].dir).length > 1;
+            const existsOnDisk = await fs.pathExists(mlDir(meta.id));
+            const mlDeleted = !bundleHasModel && !existsOnDisk;
+            return {hasMLData: true, mlDeleted, projectId: meta.id, projectName: meta.name || ''};
         } catch (e) {
             log.warn('[main] ml-check-ob-model failed:', e.message);
             return {hasMLData: false};
@@ -999,6 +1011,10 @@ app.on('ready', () => {
        re-entering the blocks editor always starts as an unsaved new project. */
     ipcMain.handle('clear-current-project-path', () => {
         _currentProjectFilePath = null;
+        /* Also drop the armed ML model: a fresh/blank project must not bundle the previously
+           opened project's model into its next save. (The "Use in Blocks" flow does NOT call
+           this handler, so its pending model is preserved.) */
+        _pendingMLProjectId = null;
     });
 
     /* Atomically write buf to targetPath: write to a temp file first, then rename.
@@ -1213,7 +1229,13 @@ app.on('ready', () => {
         if (await fs.pathExists(nativeMetaPath)) {
             try {
                 const raw = await fs.readFile(nativeMetaPath, 'utf8');
-                return JSON.parse(raw);
+                const meta = JSON.parse(raw);
+                /* Arm re-bundle: once a project's ML model is loaded, a subsequent blocks-project
+                   save (Ctrl+S / Save As) must re-pack this model into the .rc. Without this,
+                   opening an ML .rc and re-saving it would silently drop the bundled model,
+                   making the saved file fail to restore the model on any machine. */
+                _pendingMLProjectId = projectId;
+                return meta;
             } catch (e) {
                 log.warn('[main] ml-get-loaded-data: could not parse native project.json:', e.message);
                 /* fall through to .ob extraction */
@@ -1240,6 +1262,9 @@ app.on('ready', () => {
             const hasMl      = Object.keys(zip.files).some(k => k.startsWith('ml/'));
             if (!hasMl) return {noMlData: true};
             await extractMLDir(zip, projectId);
+            /* Arm re-bundle so a later save re-packs the just-extracted model into the .rc
+               (see Priority 1 note). Prevents re-save from dropping the model. */
+            _pendingMLProjectId = projectId;
             const metaPath = path.join(mlDir(projectId), 'project.json');
             try {
                 let meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
