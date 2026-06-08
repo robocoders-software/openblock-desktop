@@ -12,6 +12,7 @@ import MacOSMenu from './MacOSMenu';
 import log from '../common/log.js';
 import {productName, version} from '../../package.json';
 import './board-manager.js';
+import {createLicenseManager} from './license/license-manager';
 
 import {v4 as uuidv4} from 'uuid';
 import ElectronStore from 'electron-store';
@@ -31,6 +32,75 @@ import {
 
 const storage = new ElectronStore();
 let desktopLink;
+
+/* ── Offline license ──
+   license.dat lives in userData (outside the install dir) so activation survives
+   uninstall + reinstall. The activation screen (route=activation) talks to these
+   IPC handlers. */
+const LICENSE_FILE = path.join(app.getPath('userData'), 'license.dat');
+const licenseManager = createLicenseManager(LICENSE_FILE);
+
+// Last startup check result — captured by the gate so the activation screen can
+// explain WHY it is showing (e.g. clock rollback / expired) instead of appearing blank.
+let _licenseStartupStatus = null;
+
+ipcMain.handle('license:get-machine-id', () => {
+    try { return licenseManager.getMachineId(); } catch (_) { return null; }
+});
+
+/* Why is the activation screen showing? { activated, reason } — no sensitive data. */
+ipcMain.handle('license:get-status', () => ({
+    activated: !!(_licenseStartupStatus && _licenseStartupStatus.activated),
+    reason:    (_licenseStartupStatus && _licenseStartupStatus.reason) || null
+}));
+
+/* Re-run the startup check (e.g. after the user corrects their system clock).
+   If it now passes, relaunch into the app; otherwise return the updated reason. */
+ipcMain.handle('license:recheck', () => {
+    try {
+        const s = licenseManager.checkStartup();
+        _licenseStartupStatus = s;
+        if (s.ok) {
+            setTimeout(() => { app.relaunch(); app.exit(0); }, 700);
+            return {ok: true};
+        }
+        return {ok: false, activated: !!s.activated, reason: s.reason || null};
+    } catch (e) {
+        return {ok: false, activated: false, reason: (e && e.message) || 'License check failed'};
+    }
+});
+ipcMain.handle('license:activate', (event, rawKey) => {
+    const r = licenseManager.activate(rawKey);
+    if (r && r.valid) {
+        // Gate-first flow: relaunch once into the licensed app after the
+        // activation screen shows its success message.
+        setTimeout(() => { app.relaunch(); app.exit(0); }, 1200);
+    }
+    return r;
+});
+
+/* Safe, read-only license summary for the in-app "License Details" view.
+   Returns ONLY non-sensitive fields — never the activation key, shared secret,
+   or machine hash. */
+ipcMain.handle('license:get-details', () => {
+    try {
+        const info = licenseManager.getLicenseInfo();
+        if (!info || !info.valid) return {valid: false};
+        const lic = info.license;
+        const expMs = Date.parse(`${lic.expiryDate}T00:00:00Z`);
+        const daysRemaining = Math.max(0, Math.ceil((expMs - Date.now()) / 86400000));
+        // licenseNumber is intentionally NOT included — treated as sensitive.
+        return {
+            valid:     true,
+            machineId: licenseManager.getMachineId(),
+            startDate: lic.startDate,
+            expiryDate: lic.expiryDate,
+            daysRemaining
+        };
+    } catch (_) {
+        return {valid: false};
+    }
+});
 
 /* ── ML filesystem root ── */
 const mlDir = projectId => path.join(app.getPath('userData'), 'ml-projects', projectId);
@@ -484,6 +554,38 @@ const createPrivacyWindow = () => {
         parent: _windows.main,
         search: 'route=privacy',
         title: `${productName} Privacy Policy`
+    });
+    return window;
+};
+
+/* Standalone activation window — shown gate-first when the app is not yet
+   licensed. Has no parent (the main window does not exist at this point). */
+const createActivationWindow = () => {
+    const window = createWindow({
+        width: 480,
+        height: 660,
+        search: 'route=activation',
+        title: `Activate ${productName}`,
+        resizable: false,
+        maximizable: false
+    });
+    window.once('ready-to-show', () => window.show());
+    window.on('closed', () => {
+        delete _windows.activation;
+    });
+    return window;
+};
+
+/* In-app license details window (shown from the settings menu while running). */
+const createLicenseDetailsWindow = () => {
+    const window = createWindow({
+        width: 460,
+        height: 540,
+        parent: _windows.main,
+        search: 'route=license-details',
+        title: `${productName} License`,
+        resizable: false,
+        maximizable: false
     });
     return window;
 };
@@ -1346,6 +1448,23 @@ app.on('ready', () => {
         });
     });
 
+    // ─── License gate (gate-first) ───
+    // Block the app behind the activation screen until a valid, unexpired
+    // license is stored for this machine. checkStartup() also runs the
+    // clock-rollback guard. On success the activation window relaunches the app.
+    let startup = {ok: false, activated: false, reason: 'Not activated'};
+    try {
+        startup = licenseManager.checkStartup();
+    } catch (e) {
+        log.error('[license] checkStartup failed:', e && e.message);
+        startup = {ok: false, activated: false, reason: 'License check failed'};
+    }
+    if (!startup.ok) {
+        _licenseStartupStatus = startup; // so the activation screen can explain why
+        _windows.activation = createActivationWindow();
+        return; // hold here — do not create the loading/main windows
+    }
+
     // create a loading windows let user know the app is starting
     _windows.loading = createLoadingWindow();
     _windows.loading.once('show', () => {
@@ -1371,8 +1490,14 @@ app.on('ready', () => {
             event.preventDefault();
             _windows.privacy.hide();
         });
+        _windows.licenseDetails = createLicenseDetailsWindow();
+        _windows.licenseDetails.on('close', event => {
+            event.preventDefault();
+            _windows.licenseDetails.hide();
+        });
 
-        // after finsh load progress show main window and close loading window
+        // after finsh load progress show main window (maximized) and close loading window
+        _windows.main.maximize();
         _windows.main.show();
         _windows.loading.close();
         delete _windows.loading;
@@ -1432,6 +1557,10 @@ ipcMain.on('open-license-window', () => {
 
 ipcMain.on('open-privacy-policy-window', () => {
     _windows.privacy.show();
+});
+
+ipcMain.on('open-license-details-window', () => {
+    if (_windows.licenseDetails) _windows.licenseDetails.show();
 });
 
 ipcMain.on('set-locale', (event, arg) => {

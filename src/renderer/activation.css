@@ -1,0 +1,245 @@
+html, body {
+    margin: 0;
+    height: 100%;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.wrap {
+    width: 100%;
+    height: 100vh;
+    background: linear-gradient(135deg, #001E57 0%, #003A8C 60%, #004AAD 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.card {
+    background: #fff;
+    border-radius: 18px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    width: 440px;
+    max-width: 92vw;
+    padding: 32px 36px 22px;
+    text-align: center;
+}
+
+.logo {
+    display: block;
+    width: 230px;
+    max-width: 70%;
+    height: auto;
+    object-fit: contain;
+    margin: 6px auto 10px;
+}
+
+.title {
+    font-size: 22px;
+    font-weight: 800;
+    color: #004AAD;
+    margin: 4px 0 2px;
+}
+
+.tagline {
+    font-size: 12.5px;
+    color: #555;
+    margin: 0 0 22px;
+    font-weight: 600;
+}
+
+.brand {
+    color: #FF8C1A;
+    font-weight: 700;
+}
+
+.warnBox {
+    text-align: left;
+    background: #FFF6E5;
+    border: 1.5px solid #FFD27A;
+    border-radius: 10px;
+    padding: 13px 15px;
+    margin-bottom: 18px;
+}
+
+.warnTitle {
+    font-size: 14px;
+    font-weight: 800;
+    color: #B36B00;
+    margin-bottom: 5px;
+}
+
+.warnBody {
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: #7a5a18;
+}
+
+.retryBtn {
+    margin-top: 12px;
+    width: 100%;
+    background: #FF8C1A;
+    color: #fff;
+    border: none;
+    border-radius: 9px;
+    padding: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.retryBtn:hover:not(:disabled) {
+    background: #E67E00;
+}
+
+.retryBtn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.field {
+    text-align: left;
+    margin-bottom: 18px;
+}
+
+.label {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    color: #333;
+    margin-bottom: 6px;
+}
+
+.machineRow {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.machineId {
+    flex: 1;
+    background: #EAF2FC;
+    border: 1.5px solid #CFE0F5;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-family: "Courier New", monospace;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #003A8C;
+    user-select: all;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.copyBtn {
+    border: 1.5px solid #004AAD;
+    background: #fff;
+    color: #004AAD;
+    border-radius: 8px;
+    padding: 0 14px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.copyBtn:hover {
+    background: #004AAD;
+    color: #fff;
+}
+
+.hint {
+    display: block;
+    font-size: 11px;
+    color: #888;
+    margin-top: 6px;
+}
+
+.input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1.5px solid #CFE0F5;
+    border-radius: 8px;
+    padding: 11px 13px;
+    font-family: "Courier New", monospace;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #222;
+    text-transform: uppercase;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.input:focus {
+    border-color: #004AAD;
+    box-shadow: 0 0 0 3px rgba(0, 74, 173, 0.18);
+}
+
+.errorBox {
+    background: #FDECEA;
+    border: 1px solid #F5C2BC;
+    color: #B3261E;
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 12.5px;
+    margin-bottom: 14px;
+    text-align: left;
+}
+
+.activateBtn {
+    width: 100%;
+    background: #004AAD;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+
+.activateBtn:hover:not(:disabled) {
+    background: #003A8C;
+}
+
+.activateBtn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.successBox {
+    padding: 20px 0 8px;
+}
+
+.successTick {
+    width: 60px;
+    height: 60px;
+    line-height: 60px;
+    margin: 0 auto 12px;
+    border-radius: 50%;
+    background: #0BBF8A;
+    color: #fff;
+    font-size: 32px;
+    font-weight: 800;
+}
+
+.successText {
+    font-size: 18px;
+    font-weight: 700;
+    color: #0BBF8A;
+    margin: 0 0 4px;
+}
+
+.successSub {
+    font-size: 13px;
+    color: #666;
+    margin: 0;
+}
+
+.footer {
+    margin-top: 18px;
+    font-size: 11px;
+    color: #999;
+}

@@ -2,7 +2,6 @@ import {app, dialog, shell} from 'electron';
 import {autoUpdater, CancellationToken} from 'electron-updater';
 import log from 'electron-log';
 import bytes from 'bytes';
-import path from 'path';
 
 import formatMessage from 'format-message';
 import parseReleaseMessage from 'openblock-parse-release-message';
@@ -16,11 +15,14 @@ class OpenblockDesktopUpdater {
 
         autoUpdater.autoDownload = false;
 
-        const appPath = app.getAppPath();
         if (app.isPackaged) {
             autoUpdater.logger = log;
             autoUpdater.logger.transports.file.level = 'info';
-            autoUpdater.updateConfigPath = path.join(appPath, '../win-unpacked/resources/app-update.yml');
+            // Do NOT hardcode updateConfigPath — the previous
+            // '../win-unpacked/resources/app-update.yml' only resolved when running the
+            // unpacked --dir build, and pointed at a non-existent path in the installed
+            // app. electron-updater's default (resources/app-update.yml next to the asar)
+            // is correct for installed builds and is used automatically.
         }
 
         this.updaterState = null;
@@ -101,8 +103,24 @@ class OpenblockDesktopUpdater {
     }
 
     requestCheckUpdate (_windows) {
+        // electron-updater needs an app-update.yml (dev: dev-app-update.yml) that is only
+        // generated when a `publish` provider is configured in electron-builder. In dev,
+        // and in builds without an update server, that file does not exist — checking would
+        // throw ENOENT. Report "already latest" gracefully instead of a scary error.
+        if (!app.isPackaged) {
+            this.reportUpdateState({phase: 'latest'});
+            return;
+        }
+
         autoUpdater.on('error', err => {
             this.removeAllAutoUpdaterListeners();
+            const msg = (err && err.message) || '';
+            // No update source configured for this build (no app-update.yml / no published
+            // versions). Treat as "up to date" rather than surfacing a raw ENOENT error.
+            if (/ENOENT|app-update\.yml|No published versions|Unable to find|Cannot find channel/i.test(msg)) {
+                this.reportUpdateState({phase: 'latest'});
+                return;
+            }
             if (err.message === 'net::ERR_INTERNET_DISCONNECTED') {
                 this.reportUpdateState({
                     phase: UPDATE_MODAL_STATE.error,

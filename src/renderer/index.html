@@ -6,20 +6,40 @@
         body {
             background-color: #004AAD;
         }
-        .splash {
-            color: white;
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            font-size: xx-large;
-            font-weight: bolder;
+        .splashWrap {
             margin: 0;
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
+            text-align: center;
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        }
+        .splash {
+            color: white;
+            font-size: xx-large;
+            font-weight: bolder;
+            margin: 0;
+        }
+        .splashTagline {
+            color: rgba(255, 255, 255, 0.92);
+            font-size: 1.1rem;
+            font-weight: 600;
+            letter-spacing: 0.4px;
+            margin: 16px 0 0;
+        }
+        .splashBrand {
+            color: #FFC02E;
+            font-weight: 700;
         }
     </style>
 </head>
 <body>
-    <div id="app"><p class="splash">RoboCoders Studio is loading...</p></div>
+    <div id="app">
+        <div class="splashWrap">
+            <p class="splash">RoboCoders Studio is loading...</p>
+            <p class="splashTagline">Code &bull; Build &bull; Innovate with <span class="splashBrand">RoboCoders Studio</span></p>
+        </div>
+    </div>
 </body>
 </html>

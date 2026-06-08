@@ -1,0 +1,123 @@
+html, body {
+    margin: 0;
+    height: 100%;
+    background: #fff;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.wrap {
+    padding: 26px 30px;
+    color: #222;
+}
+
+.head {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 22px;
+}
+
+.logo {
+    width: 190px;
+    max-width: 70%;
+    height: auto;
+    object-fit: contain;
+}
+
+.title {
+    font-size: 19px;
+    font-weight: 800;
+    color: #004AAD;
+    margin: 0;
+}
+
+.loading {
+    color: #888;
+    font-size: 14px;
+}
+
+.notActive {
+    background: #FDECEA;
+    border: 1px solid #F5C2BC;
+    color: #B3261E;
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 14px;
+}
+
+.statusRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+}
+
+.badge {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 5px 12px;
+    border-radius: 20px;
+}
+
+.badgeOk {
+    background: #E5F7F0;
+    color: #0B9E73;
+}
+
+.badgeWarn {
+    background: #FFF3E0;
+    color: #C77700;
+}
+
+.daysLeft {
+    font-size: 13px;
+    color: #555;
+    font-weight: 600;
+}
+
+.rows {
+    border: 1px solid #E8EEF6;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 13px 16px;
+    border-bottom: 1px solid #EEF3F9;
+}
+
+.row:last-child {
+    border-bottom: none;
+}
+
+.rowLabel {
+    font-size: 13px;
+    color: #777;
+    font-weight: 600;
+}
+
+.rowValue {
+    font-size: 14px;
+    color: #1a1a1a;
+    font-weight: 700;
+    text-align: right;
+    word-break: break-all;
+}
+
+.mono {
+    font-family: "Courier New", monospace;
+    letter-spacing: 0.5px;
+    color: #003A8C;
+}
+
+.footer {
+    margin-top: 22px;
+    font-size: 11.5px;
+    color: #999;
+    text-align: center;
+}

@@ -393,6 +393,9 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         handleClickLicense () {
             ipcRenderer.send('open-license-window');
         }
+        handleClickLicenseDetails () {
+            ipcRenderer.send('open-license-details-window');
+        }
         handleClickCheckUpdate () {
             ipcRenderer.send('requestCheckUpdate');
         }
@@ -637,6 +640,14 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                             id="gui.desktopMenuBar.license"
                         />),
                         onClick: () => this.handleClickLicense()
+                    },
+                    {
+                        title: (<FormattedMessage
+                            defaultMessage="Activation"
+                            description="Menu bar item for viewing license/activation details"
+                            id="gui.desktopMenuBar.activation"
+                        />),
+                        onClick: () => this.handleClickLicenseDetails()
                     },
                     {
                         title: (<FormattedMessage

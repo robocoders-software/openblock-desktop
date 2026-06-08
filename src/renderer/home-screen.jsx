@@ -91,10 +91,10 @@ const TOP_SECTIONS = [
 
 const BOTTOM_SECTIONS = [
     {
-        title: 'AI & Machine Learning',
+        title: 'Artificial Intelligence and Machine Learning',
         cards: [{
             id: 'ml',
-            title: 'AI & Machine Learning',
+            title: 'AI & ML',
             description: 'Train custom AI models to recognise images, text & sounds — then use them in your projects',
             age: 'Ages 10+',
             icon: <AIIcon />
