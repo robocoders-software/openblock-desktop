@@ -2,7 +2,7 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [main, license]
+    branches: [main, license, exe-actions]
     tags: ['v*']
   workflow_dispatch:
 
