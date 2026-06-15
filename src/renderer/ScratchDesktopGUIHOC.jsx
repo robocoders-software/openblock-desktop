@@ -81,33 +81,60 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                         this.props.onSetDeviceData(makeDeviceLibrary());
                     });
 
-                /* ── ML deleted-model check for files opened via double-click / CLI ──
-                   When a .ob is opened this way it bypasses sb-file-uploader-hoc, so
-                   the check must happen here before vm.loadProject extracts ml/ data. */
+                /* ── ML missing-model check for files opened via double-click / CLI ──
+                   When a .rc is opened this way it bypasses sb-file-uploader-hoc, so the
+                   check must happen here before vm.loadProject. The blocks .rc only
+                   references its model by metadata (ml-meta.json); the model itself lives
+                   on disk. If it isn't on this device, offer the same Import / Continue /
+                   Cancel choices as the in-app File → Open path so behaviour is identical. */
                 try {
                     const initialFilePath = await ipcRenderer.invoke('get-initial-file-path');
                     if (initialFilePath && /\.rc$/i.test(initialFilePath)) {
-                        const mlCheck = await ipcRenderer.invoke('ml-check-ob-model', initialFilePath);
-                        if (mlCheck && mlCheck.mlDeleted) {
-                            const name = mlCheck.projectName || 'Unknown';
-                            const idx = await showAppDialog({
-                                type: 'warning',
-                                title: 'ML Model Not Found',
-                                message: `The ML model "${name}" used in this project has been deleted.`,
-                                detail: 'You can continue without ML blocks, or cancel.',
-                                buttons: ['Continue without ML blocks', 'Cancel'],
-                                defaultId: 0
-                            });
-                            if (idx === 1) {
-                                /* User cancelled — abort load, start fresh */
+                        let mlCheck = await ipcRenderer.invoke('ml-check-ob-model', initialFilePath);
+                        /* mlMissing is the current field; mlDeleted kept for back-compat. */
+                        if (mlCheck && (mlCheck.mlMissing || mlCheck.mlDeleted)) {
+                            const abortToNewProject = () => {
                                 this.props.onLoadingCompleted();
                                 ipcRenderer.send('loading-completed');
                                 this.props.onHasInitialProject(false, this.props.loadingState);
                                 this.props.onRequestNewProject();
+                            };
+                            const name = mlCheck.projectName || 'Unknown';
+                            const type = mlCheck.projectType || 'model';
+                            const idx = await showAppDialog({
+                                type: 'warning',
+                                title: 'ML Model Not Found',
+                                message: `This project uses the ML model "${name}" (${type}), which is not on this device.`,
+                                detail: 'Import the model file (.rcml) to enable its ML blocks, continue without ML ' +
+                                    '(blocks stay but won’t predict), or cancel opening.',
+                                buttons: ['Import Model…', 'Continue without ML', 'Cancel'],
+                                defaultId: 0
+                            });
+                            if (idx === 2) {
+                                /* Cancel — abort load, start fresh */
+                                abortToNewProject();
                                 return;
                             }
-                            window.__openblockMLSkipRestore = true;
-                            ipcRenderer.send('ml-set-skip-restore', true);
+                            if (idx === 0) {
+                                /* Import a .rcml model, then re-check whether it satisfies this project. */
+                                const result = await ipcRenderer.invoke('ml-open-ob-file').catch(() => null);
+                                if (!result || result.canceled || result.error) {
+                                    /* Import cancelled/failed — abort so the user can retry deliberately. */
+                                    abortToNewProject();
+                                    return;
+                                }
+                                mlCheck = await ipcRenderer.invoke('ml-check-ob-model', initialFilePath);
+                                if (mlCheck && (mlCheck.mlMissing || mlCheck.mlDeleted)) {
+                                    /* Imported model still doesn't match this project — continue without ML. */
+                                    window.__openblockMLSkipRestore = true;
+                                    ipcRenderer.send('ml-set-skip-restore', true);
+                                }
+                                /* else: model now present on disk → load normally below. */
+                            } else {
+                                /* Continue without ML — blocks stay but predictions return defaults. */
+                                window.__openblockMLSkipRestore = true;
+                                ipcRenderer.send('ml-set-skip-restore', true);
+                            }
                         }
                     }
                 } catch (_) { /* ML check failed — proceed normally */ }
@@ -189,7 +216,8 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     const content  = await this.props.vm.saveProjectSb3();
                     const arrayBuf = await content.arrayBuffer();
                     const filePath = await ipcRenderer.invoke('get-current-project-path');
-                    await ipcRenderer.invoke('write-crash-backup', Buffer.from(arrayBuf), filePath);
+                    await ipcRenderer.invoke(
+                        'write-crash-backup', Buffer.from(arrayBuf), filePath, this._activeMLMeta());
                 } catch (_) { /* backup is best-effort */ }
             }, BACKUP_INTERVAL_MS);
 
@@ -263,6 +291,21 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 ipcRenderer.invoke('clear-crash-backup').catch(() => {});
             }
         }
+        /* Serializable snapshot of the active ML model (no classifier/functions) for the
+           crash backup, so ML blocks restore with the right type/labels. */
+        _activeMLMeta () {
+            try {
+                const m = window.__openblockMLModel;
+                if (!m || !m.projectId) return null;
+                return {
+                    projectId: m.projectId,
+                    name:      m.projectName || '',
+                    type:      m.type || '',
+                    labels:    Array.isArray(m.labels) ? m.labels : [],
+                    trained:   m.trainingStatus === 'ready'
+                };
+            } catch (_) { return null; }
+        }
         async _checkCrashBackup () {
             try {
                 const info = await ipcRenderer.invoke('check-crash-backup');
@@ -279,6 +322,30 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 if (choice === 0) {
                     const backupData = await ipcRenderer.invoke('read-crash-backup');
                     if (backupData) {
+                        /* Re-establish the ML model reference BEFORE loadProject so the
+                           PROJECT_LOADED handler renders the correct ML block type/labels
+                           instead of defaulting to the image-led union. */
+                        if (info.mlMeta && info.mlMeta.projectId) {
+                            window.__openblockMLModel = {
+                                projectId:      info.mlMeta.projectId,
+                                projectName:    info.mlMeta.name || '',
+                                type:           info.mlMeta.type || '',
+                                labels:         info.mlMeta.labels || [],
+                                trainingStatus: info.mlMeta.trained ? 'ready' : 'idle'
+                            };
+                            // One-shot flag: tell the PROJECT_LOADED handler to KEEP this
+                            // restored reference even if the backup has no .rc file with an
+                            // ml-meta (unsaved project) — otherwise its "no ML data" branch
+                            // would clear it and fall back to the default image palette.
+                            window.__openblockMLRestoreKeep = true;
+                            // Point main at the saved file (if any) so its ml-meta.json /
+                            // on-disk model can be loaded by the PROJECT_LOADED handler.
+                            if (info.originalFilePath) {
+                                ipcRenderer.send('ml-update-current-file', info.originalFilePath);
+                            }
+                            // Keep main's pending id in sync so a later save re-writes the reference.
+                            ipcRenderer.send('ml-set-pending-project', info.mlMeta.projectId);
+                        }
                         await this.props.vm.loadProject(backupData.buffer || backupData);
                         if (info.originalFilePath) {
                             const title = require('path').basename(
@@ -461,6 +528,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 if (!savePath) return; /* user cancelled Save As — proceed with open anyway */
             }
             try {
+                this._armPendingMLBeforeSave();
                 const [content, thumbnail] = await Promise.all([
                     this.props.vm.saveProjectSb3(),
                     this._captureThumbnail()
@@ -482,8 +550,25 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             }
         }
 
+        /* Ensure the main process knows the currently-active ML model BEFORE any save, so
+           the saved .rc always embeds the ml-meta.json reference. window.__openblockMLModel
+           is the renderer's source of truth; main's _pendingMLProjectId can be stale or
+           cleared by intervening project/file events (e.g. the blank project created by
+           "Use in Blocks"). Re-arming here at save time guarantees the reference is written.
+           If no model is active we leave it alone — main's carryForwardMLRef preserves an
+           existing reference for projects whose model isn't currently loaded in memory. */
+        _armPendingMLBeforeSave () {
+            try {
+                const model = window.__openblockMLModel;
+                if (model && model.projectId) {
+                    ipcRenderer.send('ml-set-pending-project', model.projectId);
+                }
+            } catch (_) { /* not in Electron / no model — ignore */ }
+        }
+
         /* Save to current file path without a dialog; falls back to SB3Downloader if no path. */
         async handleDirectSave (downloadProjectFallback) {
+            this._armPendingMLBeforeSave();
             const hasPath = await ipcRenderer.invoke('get-current-project-path');
             if (!hasPath) {
                 /* First save — no file chosen yet, delegate to the download flow */
@@ -651,7 +736,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     },
                     {
                         title: (<FormattedMessage
-                            defaultMessage="Privacy policy"
+                            defaultMessage="Privacy Policy"
                             description="Menu bar item for privacy policy"
                             id="gui.menuBar.privacyPolicy"
                         />),
@@ -659,7 +744,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     },
                     {
                         title: (<FormattedMessage
-                            defaultMessage="Data settings"
+                            defaultMessage="Data Settings"
                             description="Menu bar item for data settings"
                             id="gui.menuBar.dataSettings"
                         />),

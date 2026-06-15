@@ -30,8 +30,68 @@ import {
     systemPreferences
 } from 'electron';
 
+// ── Lock the userData folder name ───────────────────────────────────────────
+// app.getPath('userData') = appData + app.name. If app.name changes between dev,
+// builds, or productName edits, ML projects / license / settings scatter into
+// different %APPDATA% folders and "disappear" after building/installing. Pin it
+// to ONE stable name so dev and every installed build share the same folder.
+// MUST run before anything reads userData (e.g. new ElectronStore() below).
+app.setName('RoboCoders Studio');
+
 const storage = new ElectronStore();
 let desktopLink;
+
+// One-time consolidation: earlier builds used different app names (Electron,
+// RoboCoders-studio-Desktop, …), so existing ML projects + activation live under
+// those old %APPDATA% folders. Copy them into the now-stable userData folder once
+// so users don't lose work after this change. Only fills gaps (never overwrites).
+const migrateLegacyUserData = () => {
+    if (storage.get('userdata.consolidated_v1', false)) return;
+    try {
+        const appData = app.getPath('appData');
+        const userData = app.getPath('userData');
+        const selfName = path.basename(userData);
+        const currentMl = path.join(userData, 'ml-projects');
+        fs.ensureDirSync(currentMl);
+
+        const legacyNames = ['Electron', 'RoboCoders-studio-Desktop', 'RoboCoders-studio-desktop', 'RoboCodersStudio']
+            .filter(n => n !== selfName);
+
+        let newestLic = null;
+        let newestLicTime = 0;
+        for (const name of legacyNames) {
+            const base = path.join(appData, name);
+            // Bring over each ML project folder that we don't already have.
+            const legacyMl = path.join(base, 'ml-projects');
+            let entries = [];
+            try { entries = fs.readdirSync(legacyMl, {withFileTypes: true}); } catch (_) { entries = []; }
+            for (const ent of entries) {
+                if (!ent.isDirectory()) continue;
+                const dst = path.join(currentMl, ent.name);
+                if (fs.existsSync(dst)) continue; // keep existing, fill gaps only
+                try { fs.copySync(path.join(legacyMl, ent.name), dst); } catch (_) { /* skip bad one */ }
+            }
+            // Track the newest legacy activation (machine-bound, so it still decrypts here).
+            const lic = path.join(base, 'license.dat');
+            try {
+                const t = fs.statSync(lic).mtimeMs;
+                if (t > newestLicTime) { newestLicTime = t; newestLic = lic; }
+            } catch (_) { /* no license here */ }
+        }
+
+        // Preserve activation across the rename if we don't already have one.
+        const curLic = path.join(userData, 'license.dat');
+        if (newestLic && !fs.existsSync(curLic)) {
+            try { fs.copySync(newestLic, curLic); } catch (_) {}
+        }
+
+        storage.set('userdata.consolidated_v1', true);
+        log.info(`[migrate] consolidated legacy userData into "${selfName}"`);
+    } catch (e) {
+        log.warn('[migrate] userData consolidation failed:', e && e.message);
+    }
+};
+migrateLegacyUserData();
 
 /* ── Offline license ──
    license.dat lives in userData (outside the install dir) so activation survives
@@ -131,7 +191,8 @@ const walkDir = async (dir, base) => {
     return results;
 };
 
-/* Bundle <projectDir>/** into a JSZip under the 'ml/' prefix. */
+/* Bundle <projectDir>/** into a JSZip under the 'ml/' prefix.
+   Used ONLY for the standalone .rcml model export (and to read OLD bundled .rc files). */
 const bundleMLDir = async (zip, projectId) => {
     const base  = mlDir(projectId);
     const files = await walkDir(base, base);
@@ -140,6 +201,42 @@ const bundleMLDir = async (zip, projectId) => {
         const buf = await fs.readFile(abs);
         zip.file(`ml/${rel}`, buf);
     }
+};
+
+/* Write ONLY the ML model's metadata (NOT the model files) into the blocks .rc.
+   PictoBlox-style: the blocks project references its model by metadata; the model itself
+   lives on disk in <userData>/ml-projects/<id>/ and is shared separately as a .rcml file.
+   This keeps .rc files small and avoids the fragile "bundle the whole model" approach. */
+const writeMLMeta = async (zip, projectId) => {
+    const metaPath = path.join(mlDir(projectId), 'project.json');
+    const p = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+    zip.file('ml-meta.json', JSON.stringify({
+        projectId,
+        name:    p.name || '',
+        type:    p.type || 'images',
+        labels:  p.labels || [],
+        trained: !!p.trained
+    }));
+};
+
+/* Carry an existing ML reference forward to a re-saved blocks .rc when no model is newly
+   armed: prefer the new ml-meta.json; fall back to copying an OLD bundled ml/ tree so
+   legacy projects keep working across re-saves. */
+const carryForwardMLRef = async (zip, sourceFilePath) => {
+    if (!sourceFilePath) return;
+    try {
+        const JSZip = require('jszip');
+        const existingZip = await JSZip.loadAsync(await fs.readFile(sourceFilePath));
+        if (existingZip.files['ml-meta.json']) {
+            zip.file('ml-meta.json', await existingZip.files['ml-meta.json'].async('nodebuffer'));
+            return;
+        }
+        for (const [key, file] of Object.entries(existingZip.files)) {
+            if (key.startsWith('ml/') && !file.dir) {
+                zip.file(key, await file.async('nodebuffer'));
+            }
+        }
+    } catch (_) { /* no existing ML reference — fine */ }
 };
 
 /* Extract 'ml/*' entries from a JSZip to <projectDir>. Guards against path traversal. */
@@ -158,6 +255,46 @@ const extractMLDir = async (zip, projectId) => {
         const content = await zip.files[zipPath].async('nodebuffer');
         await fs.writeFile(abs, content);
     }
+};
+
+/* Generate a fresh ML project id that doesn't collide with an existing directory. */
+const genMlProjectId = async () => {
+    let id;
+    do {
+        id = Math.random().toString(36).slice(2, 10);
+    } while (await fs.pathExists(mlDir(id)));
+    return id;
+};
+
+/* Collect the display names of all existing ML projects (to de-duplicate an imported copy's name). */
+const existingMlProjectNames = async () => {
+    const root  = path.join(app.getPath('userData'), 'ml-projects');
+    const names = new Set();
+    try {
+        await fs.ensureDir(root);
+        const entries = await fs.readdir(root, {withFileTypes: true});
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            try {
+                const meta = JSON.parse(await fs.readFile(path.join(root, entry.name, 'project.json'), 'utf8'));
+                if (meta && meta.name) names.add(meta.name);
+            } catch (_) { /* skip corrupted/missing project.json */ }
+        }
+    } catch (_) { /* ignore */ }
+    return names;
+};
+
+/* Produce a unique display name by appending "(copy)", "(copy 2)", … when the base is taken. */
+const dedupeMlName = (baseName, takenNames) => {
+    const base = baseName || 'ML Project';
+    if (!takenNames.has(base)) return base;
+    let candidate = `${base} (copy)`;
+    let n = 2;
+    while (takenNames.has(candidate)) {
+        candidate = `${base} (copy ${n})`;
+        n += 1;
+    }
+    return candidate;
 };
 
 /* In-memory: projectId of the last trained/saved ML project (for will-download injection). */
@@ -658,22 +795,21 @@ const createMainWindow = () => {
                         // The download was canceled or interrupted. Cancel the telemetry event and delete the file.
                         throw new Error(`save ${doneState}`); // "save cancelled" or "save interrupted"
                     }
-                    /* Inject ML filesystem directory into the .ob ZIP before final move.
-                       If bundling fails, abort the save so the user gets a complete file or nothing. */
+                    /* Write the ML model METADATA (not the model itself) into the .rc so the
+                       project references its on-disk model. Best-effort: never abort the save
+                       over metadata — the blocks must still be saved. */
                     if (isProjectSave && _pendingMLProjectId) {
                         try {
                             const JSZip      = require('jszip');
                             const fileBuffer = await fs.readFile(tempPath);
                             const zip        = await JSZip.loadAsync(fileBuffer);
-                            await bundleMLDir(zip, _pendingMLProjectId);
+                            await writeMLMeta(zip, _pendingMLProjectId);
                             const newBuffer  = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
                             await fs.writeFile(tempPath, newBuffer);
-                            _pendingMLProjectId = null; // clear only on success
                         } catch (mlErr) {
-                            log.error('[main] ML FS injection failed, aborting save:', mlErr.message);
-                            _pendingMLProjectId = null; // clear to prevent stale state on next save
-                            throw new Error(`ML data could not be bundled: ${mlErr.message}`);
+                            log.warn('[main] ML metadata write skipped:', mlErr.message);
                         }
+                        _pendingMLProjectId = null;
                     }
                     await fs.move(tempPath, userChosenPath, {overwrite: true});
                     if (isProjectSave) {
@@ -1018,79 +1154,134 @@ app.on('ready', () => {
         }
     });
 
-    /* Check whether the ML model bundled inside a .ob file still exists on disk.
-       Called before loading so the renderer can warn the user if the model was deleted. */
+    /* Validate a blocks .rc's ML reference BEFORE loading, so the renderer can warn if the
+       model isn't available on this device.
+       - New format (ml-meta.json, metadata only): the model lives on disk; report
+         `mlMissing:true` when <userData>/ml-projects/<id>/ is absent → renderer prompts to import.
+       - Old format (bundled ml/ in the file): the model travels with the file → never missing. */
     ipcMain.handle('ml-check-ob-model', async (event, filePath) => {
         if (!filePath) return {hasMLData: false};
         try {
             const JSZip = require('jszip');
             const fileBuffer = await fs.readFile(filePath);
             const zip = await JSZip.loadAsync(fileBuffer);
+
+            /* ── New format: metadata only ── */
+            if (zip.files['ml-meta.json']) {
+                const m = JSON.parse(await zip.files['ml-meta.json'].async('string'));
+                if (!m || !m.projectId) return {hasMLData: false};
+                const onDisk = await fs.pathExists(path.join(mlDir(m.projectId), 'project.json'));
+                return {
+                    hasMLData: true,
+                    mlMissing: !onDisk,
+                    mlDeleted: !onDisk, // kept for older renderer checks
+                    projectId: m.projectId,
+                    projectName: m.name || '',
+                    projectType: m.type || 'images'
+                };
+            }
+
+            /* ── Old format: full bundled model (back-compat) ── */
             const metaKey = Object.keys(zip.files).find(
                 k => k.startsWith('ml/') && k.endsWith('/project.json')
             );
             if (!metaKey) return {hasMLData: false};
-            const raw = await zip.files[metaKey].async('string');
-            const meta = JSON.parse(raw);
+            const meta = JSON.parse(await zip.files[metaKey].async('string'));
             if (!meta || !meta.id) return {hasMLData: false};
-
-            // The model is available if it travels INSIDE the .rc bundle OR already exists
-            // on local disk. The bundle is self-contained: bundleMLDir() packs the entire
-            // ml-projects/<id>/ directory (training data + trained weights + labels) into
-            // the .rc, and ml-get-loaded-data extracts it on load. So a fresh machine that
-            // has never seen this project is NOT a "deleted model" — the model ships in the
-            // file. Only warn when neither the bundle nor local disk carries the model data.
-            // (Count ml/ payload files beyond the single project.json: more than one means
-            //  the actual model/training files are present in the bundle.)
-            const bundleHasModel = Object.keys(zip.files)
-                .filter(k => k.startsWith('ml/') && !zip.files[k].dir).length > 1;
-            const existsOnDisk = await fs.pathExists(mlDir(meta.id));
-            const mlDeleted = !bundleHasModel && !existsOnDisk;
-            return {hasMLData: true, mlDeleted, projectId: meta.id, projectName: meta.name || ''};
+            // A bundled file carries the model inside it → never "missing".
+            return {hasMLData: true, mlMissing: false, mlDeleted: false,
+                projectId: meta.id, projectName: meta.name || '', projectType: meta.type || 'images'};
         } catch (e) {
             log.warn('[main] ml-check-ob-model failed:', e.message);
             return {hasMLData: false};
         }
     });
 
-    /* Explicit ML save dialog — bundles the ML filesystem directory into a new .ob ZIP */
+    /* Download/export a standalone ML model file (.rcml) — bundles the full ML project
+       directory (training data + trained weights + labels). This is the portable model
+       artifact users share between machines; the blocks .rc only stores metadata. */
     ipcMain.handle('ml-save-ob-file', async (event, projectId, projectName) => {
         const userPath = dialog.showSaveDialogSync(_windows.main, {
-            title:       'Save ML Project',
-            defaultPath: `${projectName || 'ml-project'}.rc`,
-            filters:     [{name: 'RoboCoders Studio Project', extensions: ['rc']}]
+            title:       'Download ML Model',
+            defaultPath: `${projectName || 'ml-model'}.rcml`,
+            filters:     [{name: 'RoboCoders ML Model', extensions: ['rcml']}]
         });
         if (!userPath) return {success: false, canceled: true};
         try {
             const JSZip = require('jszip');
             const zip   = new JSZip();
             await bundleMLDir(zip, projectId);
-
-            /* A valid root project.json is required so the blocks editor can open this .ob */
-            const minimalProject = JSON.stringify({
-                targets: [{
-                    isStage: true, name: 'Stage',
-                    variables: {}, lists: {}, broadcasts: {}, blocks: {}, comments: {},
-                    currentCostume: 0,
-                    costumes: [{
-                        name: 'backdrop1', dataFormat: 'svg',
-                        assetId: 'cd21514d0531fdffb22204e0ec5ed84a',
-                        md5ext: 'cd21514d0531fdffb22204e0ec5ed84a.svg',
-                        rotationCenterX: 240, rotationCenterY: 180
-                    }],
-                    sounds: [], volume: 100, layerOrder: 0,
-                    tempo: 60, videoTransparency: 50, videoState: 'on', textToSpeechLanguage: null
-                }],
-                monitors: [], extensions: [],
-                meta: {semver: '3.0.0', vm: '0.2.0', agent: 'RoboCoders-studio'}
-            });
-            zip.file('project.json', minimalProject);
-
             const buf = await zip.generateAsync({type: 'nodebuffer', compression: 'DEFLATE'});
             await fs.writeFile(userPath, buf);
             return {success: true, path: userPath};
         } catch (e) {
             return {success: false, error: e.message};
+        }
+    });
+
+    /* Import a standalone ML model file (.rcml) — extracts the bundled model into
+       <userData>/ml-projects/<id>/ so it appears in ML Studio and any blocks project that
+       references it (by id) can load it. Accepts legacy .rc model exports too. */
+    ipcMain.handle('ml-open-ob-file', async () => {
+        const picked = dialog.showOpenDialogSync(_windows.main, {
+            title:      'Import ML Model',
+            filters:    [{name: 'RoboCoders ML Model', extensions: ['rcml', 'rc']}],
+            properties: ['openFile']
+        });
+        if (!picked || !picked.length) return {canceled: true};
+        const filePath = picked[0];
+        try {
+            const JSZip = require('jszip');
+            const zip   = await JSZip.loadAsync(await fs.readFile(filePath));
+            const metaKey = Object.keys(zip.files).find(
+                k => k.startsWith('ml/') && k.endsWith('/project.json')
+            );
+            if (!metaKey) return {error: 'No ML model found in this file.'};
+            const meta = JSON.parse(await zip.files[metaKey].async('string'));
+            if (!meta || !meta.id) return {error: 'Invalid ML model file.'};
+
+            /* If a project with this id already exists locally, import as an INDEPENDENT
+               copy under a fresh id with a de-duplicated name — the original is kept intact,
+               so no manual delete is needed and both can coexist. If the id does NOT exist,
+               keep the original id so any blocks project that references this model by id
+               still links to it. */
+            const collision = await fs.pathExists(mlDir(meta.id));
+            let targetId   = meta.id;
+            let targetName = meta.name || '';
+            if (collision) {
+                targetId   = await genMlProjectId();
+                targetName = dedupeMlName(meta.name, await existingMlProjectNames());
+            }
+
+            await extractMLDir(zip, targetId);
+
+            /* extractMLDir wrote the original id/name from the zip. When importing as a copy,
+               rewrite the extracted project.json so its id/name match the new target.
+               Training samples and model weights are keyed by per-sample ids (not the project
+               id), so only project.json needs updating. */
+            if (collision) {
+                const metaPath = path.join(mlDir(targetId), 'project.json');
+                try {
+                    const extracted = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+                    const now = Date.now();
+                    const updated = {
+                        ...extracted,
+                        id:        targetId,
+                        name:      targetName,
+                        createdAt: now,
+                        updatedAt: now,
+                        savedAt:   now
+                    };
+                    await fs.writeFile(metaPath, JSON.stringify(updated));
+                } catch (e) {
+                    log.warn('[main] ml-open-ob-file: could not rewrite copy metadata:', e.message);
+                }
+            }
+
+            return {projectId: targetId, name: targetName};
+        } catch (e) {
+            log.error('[main] ml-open-ob-file failed:', e.message);
+            return {error: e.message};
         }
     });
 
@@ -1143,27 +1334,14 @@ app.on('ready', () => {
             const buf   = Buffer.isBuffer(projectData) ? projectData : Buffer.from(projectData);
             const zip   = await JSZip.loadAsync(buf);
 
-            /* Bundle ML data; if it fails, abort the save so user isn't left with a broken file */
+            /* Write the active ML model's METADATA only (model stays on disk). On re-save
+               with no newly-armed model, carry forward the existing ML reference. */
             if (_pendingMLProjectId) {
-                try {
-                    await bundleMLDir(zip, _pendingMLProjectId);
-                } catch (mlErr) {
-                    log.error('[main] ML bundling failed, aborting save:', mlErr.message);
-                    return {success: false, error: `ML bundling failed: ${mlErr.message}`};
-                }
+                try { await writeMLMeta(zip, _pendingMLProjectId); }
+                catch (mlErr) { log.warn('[main] ML metadata write skipped:', mlErr.message); }
                 _pendingMLProjectId = null;
             } else {
-                /* No new ML export — carry forward any existing ml/ entries from the current file
-                   so the model is preserved across repeated saves (e.g. auto-save, second Ctrl+S). */
-                try {
-                    const existingBuf = await fs.readFile(_currentProjectFilePath);
-                    const existingZip = await JSZip.loadAsync(existingBuf);
-                    for (const [key, file] of Object.entries(existingZip.files)) {
-                        if (key.startsWith('ml/') && !file.dir) {
-                            zip.file(key, await file.async('nodebuffer'));
-                        }
-                    }
-                } catch (_) { /* no existing ml data — that's fine */ }
+                await carryForwardMLRef(zip, _currentProjectFilePath);
             }
 
             if (thumbnailData) {
@@ -1192,27 +1370,14 @@ app.on('ready', () => {
             const buf   = Buffer.isBuffer(projectData) ? projectData : Buffer.from(projectData);
             const zip   = await JSZip.loadAsync(buf);
 
-            /* Bundle ML data; abort on failure to prevent incomplete files */
+            /* Write the active ML model's METADATA only (model stays on disk). On Save As
+               with no newly-armed model, carry forward the existing ML reference. */
             if (_pendingMLProjectId) {
-                try {
-                    await bundleMLDir(zip, _pendingMLProjectId);
-                } catch (mlErr) {
-                    log.error('[main] ML bundling failed, aborting save-to-path:', mlErr.message);
-                    return {success: false, error: `ML bundling failed: ${mlErr.message}`};
-                }
+                try { await writeMLMeta(zip, _pendingMLProjectId); }
+                catch (mlErr) { log.warn('[main] ML metadata write skipped:', mlErr.message); }
                 _pendingMLProjectId = null;
             } else if (_currentProjectFilePath) {
-                /* No new ML export — carry forward any existing ml/ entries from the current file
-                   (handles Save As when the existing file already has ML data). */
-                try {
-                    const existingBuf = await fs.readFile(_currentProjectFilePath);
-                    const existingZip = await JSZip.loadAsync(existingBuf);
-                    for (const [key, file] of Object.entries(existingZip.files)) {
-                        if (key.startsWith('ml/') && !file.dir) {
-                            zip.file(key, await file.async('nodebuffer'));
-                        }
-                    }
-                } catch (_) { /* no existing ml data — that's fine */ }
+                await carryForwardMLRef(zip, _currentProjectFilePath);
             }
 
             if (thumbnailData) {
@@ -1276,13 +1441,16 @@ app.on('ready', () => {
     const crashBackupMeta = path.join(crashBackupDir, 'meta.json');
 
     /* Write (or overwrite) the crash backup. Called by renderer every few minutes when dirty. */
-    ipcMain.handle('write-crash-backup', async (event, projectData, originalFilePath) => {
+    ipcMain.handle('write-crash-backup', async (event, projectData, originalFilePath, mlMeta) => {
         try {
             await fs.ensureDir(crashBackupDir);
             const buf = Buffer.isBuffer(projectData) ? projectData : Buffer.from(projectData);
             await fs.writeFile(crashBackupFile, buf);
             await fs.writeFile(crashBackupMeta, JSON.stringify({
                 originalFilePath: originalFilePath || null,
+                /* Snapshot of the active ML model reference so the ML blocks restore with the
+                   correct type/labels — the sb3 backup alone has no ML model link. */
+                mlMeta: mlMeta || null,
                 savedAt: Date.now()
             }));
             return {success: true};
@@ -1305,7 +1473,8 @@ app.on('ready', () => {
             const exists = await fs.pathExists(crashBackupFile);
             if (!exists) return {exists: false};
             const meta = JSON.parse(await fs.readFile(crashBackupMeta, 'utf8'));
-            return {exists: true, originalFilePath: meta.originalFilePath, savedAt: meta.savedAt};
+            return {exists: true, originalFilePath: meta.originalFilePath,
+                mlMeta: meta.mlMeta || null, savedAt: meta.savedAt};
         } catch (_) {
             return {exists: false};
         }
@@ -1386,7 +1555,10 @@ app.on('ready', () => {
         }
     });
 
-    /* ── Read ML metadata from the open .ob file without extracting ── */
+    /* ── Read ML metadata from the open .rc file without extracting ──
+       New format: a root-level `ml-meta.json` (metadata only; model lives on disk).
+       Old format (back-compat): a bundled `ml/.../project.json`.
+       Always returns {id, name, type, labels, trained} or null. */
     ipcMain.handle('ml-preload-active-model', async () => {
         /* Always prefer _lastOpenedFilePath over argv._ — it is updated on every File > Open,
            whereas argv._ is fixed at launch and would point to the wrong file after re-open. */
@@ -1397,6 +1569,18 @@ app.on('ready', () => {
             const JSZip = require('jszip');
             const fileBuffer = await fs.readFile(projectPath);
             const zip = await JSZip.loadAsync(fileBuffer);
+            /* New format — metadata only */
+            if (zip.files['ml-meta.json']) {
+                const m = JSON.parse(await zip.files['ml-meta.json'].async('string'));
+                return {
+                    id:      m.projectId,
+                    name:    m.name || '',
+                    type:    m.type || 'images',
+                    labels:  m.labels || [],
+                    trained: !!m.trained
+                };
+            }
+            /* Old format — full bundled model */
             const metaKey = Object.keys(zip.files).find(
                 k => k.startsWith('ml/') && k.endsWith('/project.json')
             );
