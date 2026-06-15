@@ -1,0 +1,101 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, license]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '18.x'
+  ORG: robocoders-software
+
+jobs:
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: openblock-desktop
+
+    steps:
+      - name: Checkout openblock-desktop
+        uses: actions/checkout@v4
+        with:
+          path: openblock-desktop
+
+      - name: Checkout dependency repositories
+        shell: pwsh
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          $repos = @(
+            'openblock-gui',
+            'openblock-l10n',
+            'openblock-ml-studio',
+            'openblock-blocks',
+            'openblock-vm'
+          )
+
+          foreach ($repo in $repos) {
+            $dest = Join-Path $env:GITHUB_WORKSPACE $repo
+            Write-Host "Cloning $repo..."
+            git clone --depth 1 --branch $env:REF "https://github.com/${{ env.ORG }}/$repo.git" $dest
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Branch $env:REF not found for $repo, falling back to main"
+              git clone --depth 1 --branch main "https://github.com/${{ env.ORG }}/$repo.git" $dest
+              if ($LASTEXITCODE -ne 0) { throw "Failed to clone $repo" }
+            }
+          }
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: openblock-desktop/package-lock.json
+
+      - name: Prepare dependency packages
+        shell: pwsh
+        run: |
+          npm ci --prefix ../openblock-l10n
+          npm run build:data --prefix ../openblock-l10n
+          npm ci --prefix ../openblock-ml-studio --legacy-peer-deps
+          npm ci --prefix ../openblock-vm --legacy-peer-deps
+          Push-Location ../openblock-vm
+          node -e "const webpack=require('webpack');webpack(require('./webpack.config.js').slice(0,2),(err,stats)=>{if(err||stats.hasErrors()){console.error(err||stats.toString());process.exit(1)};console.log('openblock-vm web+node build OK');});"
+          Pop-Location
+          npm ci --prefix ../openblock-gui
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer
+        env:
+          NODE_ENV: production
+          NODE_OPTIONS: --max_old_space_size=8192
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          USE_HARD_LINKS: false
+        run: npm run dist
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoboCoders-Studio-Windows-x64
+          path: openblock-desktop/dist/RoboCoders-studio-Desktop_v*_win_x64.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: openblock-desktop/dist/RoboCoders-studio-Desktop_v*_win_x64.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
