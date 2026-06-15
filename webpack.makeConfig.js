@@ -141,6 +141,12 @@ const makeConfig = function (defaultConfig, options) {
         resolve: {
             cacheWithContext: false,
             symlinks: false,
+            // Local packages are aliased to sibling-repo source paths (outside node_modules).
+            // Ensure their imports still resolve against openblock-desktop's dependencies.
+            modules: [
+                path.resolve(__dirname, 'node_modules'),
+                'node_modules'
+            ],
             alias: {
                 // Use real (non-junction) paths so Windows junctions don't hide files from
                 // babel-loader include checks. Each local package needs its own alias pair.
