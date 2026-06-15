@@ -145,6 +145,8 @@ const makeConfig = function (defaultConfig, options) {
             // Ensure their imports still resolve against openblock-desktop's dependencies.
             modules: [
                 path.resolve(__dirname, 'node_modules'),
+                path.resolve(__dirname, '../openblock-gui/node_modules'),
+                path.resolve(__dirname, '../openblock-blocks/node_modules'),
                 'node_modules'
             ],
             alias: {
