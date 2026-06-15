@@ -2,9 +2,15 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [main, exe-actions]
+    branches-ignore:
+      - main
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to build (defaults to selected branch)
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -12,6 +18,7 @@ permissions:
 env:
   NODE_VERSION: '18.x'
   ORG: robocoders-software
+  BUILD_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
 
 jobs:
   build-windows:
@@ -27,11 +34,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: openblock-desktop
+          ref: ${{ env.BUILD_BRANCH }}
 
       - name: Checkout dependency repositories
         shell: pwsh
         env:
-          REF: ${{ github.ref_name }}
+          REF: ${{ env.BUILD_BRANCH }}
         run: |
           $repos = @(
             'openblock-gui',
@@ -86,7 +94,7 @@ jobs:
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RoboCoders-Studio-Windows-x64
+          name: RoboCoders-Studio-Windows-x64-${{ env.BUILD_BRANCH }}
           path: openblock-desktop/dist/RoboCoders-studio-Desktop_v*_win_x64.exe
           if-no-files-found: error
           retention-days: 14
