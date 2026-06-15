@@ -64,7 +64,7 @@ jobs:
         run: |
           npm ci --prefix ../openblock-l10n
           npm run build:data --prefix ../openblock-l10n
-          npm ci --prefix ../openblock-blocks
+          npm ci --prefix ../openblock-blocks --ignore-scripts
           npm ci --prefix ../openblock-ml-studio --legacy-peer-deps
           npm ci --prefix ../openblock-vm --legacy-peer-deps
           Push-Location ../openblock-vm
