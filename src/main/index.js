@@ -833,22 +833,19 @@ const createLicenseDetailsWindow = () => {
 };
 
 const createLoadingWindow = () => {
+    // Full-screen, framed loading window (same chrome as the main window) so the
+    // "RoboCoders Studio is loading…" splash fills the screen and transitions seamlessly into the
+    // maximized main window. Solid brand-blue background — NOT transparent — so the window is the
+    // right colour the instant it appears (a transparent window flashes white on Windows); both
+    // index.html's static splash and loading.jsx use #004AAD, so the loading text shows with no flash.
     const window = createWindow({
-        width: 800,
-        height: 150,
-        frame: false,
-        resizable: false,
-        // Solid brand-blue background — NOT transparent. A `transparent: true` window flashes white
-        // on Windows before the renderer composites; as the renderer bundle grew this became the
-        // visible "white screen, then RoboCoders is loading…" regression. With a solid
-        // backgroundColor the window is the right colour the instant it appears, and index.html's
-        // splash + loading.css both use #004AAD, so the loading text shows immediately, no flash.
         backgroundColor: '#004AAD',
         search: 'route=loading',
-        title: `Loading ${productName} ${version}`
+        title: `${productName} ${version}`
     });
 
     window.once('ready-to-show', () => {
+        window.maximize();
         window.show();
     });
 
@@ -1852,11 +1849,28 @@ app.on('ready', async () => {
             _windows.licenseDetails.hide();
         });
 
-        // after finsh load progress show main window (maximized) and close loading window
-        _windows.main.maximize();
-        _windows.main.show();
-        _windows.loading.close();
-        delete _windows.loading;
+        // Keep the loading window ("RoboCoders is loading…") visible until the MAIN app has
+        // actually finished loading, THEN reveal the main window and close the loader. Previously
+        // we revealed main + closed the loader immediately, so on a fast (production) disk the
+        // loading screen was shown and closed in the same frame and was never visible — it only
+        // appeared in dev, where the webpack dev server made the renderer slow to load.
+        let mainRevealed = false;
+        const revealMain = () => {
+            if (mainRevealed || !_windows.main) return;
+            mainRevealed = true;
+            _windows.main.maximize();
+            _windows.main.show();
+            if (_windows.loading) {
+                _windows.loading.close();
+                delete _windows.loading;
+            }
+        };
+        // Preferred: the renderer's explicit "app is ready" signal (fires after the GUI mounts).
+        ipcMain.once('loading-completed', revealMain);
+        // Fallback 1: the page + bundle finished loading but no explicit signal arrived shortly after.
+        _windows.main.webContents.once('did-finish-load', () => setTimeout(revealMain, 2500));
+        // Fallback 2: hard cap so a load error can never leave the user stuck on the loader.
+        setTimeout(revealMain, 20000);
     });
 });
 

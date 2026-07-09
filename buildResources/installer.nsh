@@ -38,6 +38,12 @@ ${StrRep}
     Var State_Maixduino
     Var State_SparkFun
 
+    ; "1" once the board page's Leave function has run IN THIS PROCESS. With perMachine (single
+    ; elevated instance) customInstall runs in the same process, so it can trust the in-memory
+    ; $State_* directly; if this is empty there (an older outer/inner UAC split), it falls back
+    ; to the registry values written by the UI instance.
+    Var BoardSelectionDone
+
     Function BoardSelectionPage
         ; When the installer elevates (UAC), it relaunches as an "inner" instance that re-runs
         ; every page. Skip this page there — it was already shown in the outer (UI) instance and
@@ -92,10 +98,12 @@ ${StrRep}
         ${NSD_GetState} $Check_Maixduino $State_Maixduino
         ${NSD_GetState} $Check_SparkFun  $State_SparkFun
 
-        ; Persist the selection so the elevated install instance uses the user's ACTUAL choice.
-        ; This page runs only in the outer (UI) instance; the install runs in the elevated inner
-        ; instance, which reads these values back in customInstall. (Same-user UAC elevation
-        ; shares HKCU.) A "Recorded" flag distinguishes "user chose" from "silent/no UI".
+        ; Mark that the user made a choice in THIS process. customInstall (same process under
+        ; perMachine) trusts $State_* directly when this is set.
+        StrCpy $BoardSelectionDone "1"
+
+        ; Also persist to the registry as a fallback for an outer/inner UAC split, where
+        ; customInstall runs in a different (elevated) process and the in-memory vars are empty.
         WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "Arduino"   $State_Arduino
         WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "ESP32"     $State_ESP32
         WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "ESP8266"   $State_ESP8266
@@ -160,22 +168,30 @@ done:
 ; ── Extract selected board packs after main files are installed ───────────────
 !macro customInstall
 
-    ; Load the user's board selection recorded by the UI instance. customInstall runs in the
-    ; ELEVATED inner instance (per-machine install), where the in-memory $State_* vars were
-    ; never set — so we MUST read them back from the registry, or only the defaults install.
-    ReadRegStr $9 HKCU "Software\RoboCoders-Studio\Setup" "Recorded"
-    ${If} $9 == "1"
-        ReadRegStr $State_Arduino   HKCU "Software\RoboCoders-Studio\Setup" "Arduino"
-        ReadRegStr $State_ESP32     HKCU "Software\RoboCoders-Studio\Setup" "ESP32"
-        ReadRegStr $State_ESP8266   HKCU "Software\RoboCoders-Studio\Setup" "ESP8266"
-        ReadRegStr $State_RP2040    HKCU "Software\RoboCoders-Studio\Setup" "RP2040"
-        ReadRegStr $State_Maixduino HKCU "Software\RoboCoders-Studio\Setup" "Maixduino"
-        ReadRegStr $State_SparkFun  HKCU "Software\RoboCoders-Studio\Setup" "SparkFun"
-    ${Else}
-        ; No selection recorded (e.g. a silent /S install) — fall back to the default boards.
-        StrCpy $State_Arduino ${BST_CHECKED}
-        StrCpy $State_ESP32   ${BST_CHECKED}
+    ; Decide which boards to install.
+    ;  • perMachine → RequestExecutionLevel admin → the installer is ONE elevated process, so the
+    ;    board page's Leave ran here and $State_* hold the user's real choice. $BoardSelectionDone
+    ;    == "1" confirms it — use them directly (this is the case that was previously ignored).
+    ;  • Older outer/inner UAC split → $BoardSelectionDone is empty here; read the values the UI
+    ;    instance wrote to the registry.
+    ;  • Neither (e.g. a silent /S install) → default boards.
+    ${If} $BoardSelectionDone != "1"
+        ReadRegStr $9 HKCU "Software\RoboCoders-Studio\Setup" "Recorded"
+        ${If} $9 == "1"
+            ReadRegStr $State_Arduino   HKCU "Software\RoboCoders-Studio\Setup" "Arduino"
+            ReadRegStr $State_ESP32     HKCU "Software\RoboCoders-Studio\Setup" "ESP32"
+            ReadRegStr $State_ESP8266   HKCU "Software\RoboCoders-Studio\Setup" "ESP8266"
+            ReadRegStr $State_RP2040    HKCU "Software\RoboCoders-Studio\Setup" "RP2040"
+            ReadRegStr $State_Maixduino HKCU "Software\RoboCoders-Studio\Setup" "Maixduino"
+            ReadRegStr $State_SparkFun  HKCU "Software\RoboCoders-Studio\Setup" "SparkFun"
+        ${Else}
+            StrCpy $State_Arduino ${BST_CHECKED}
+            StrCpy $State_ESP32   ${BST_CHECKED}
+        ${EndIf}
     ${EndIf}
+
+    ; Visible in the installer's "Show details" log — confirms the exact selection being applied.
+    DetailPrint "Board selection (done=$BoardSelectionDone): Arduino=$State_Arduino ESP32=$State_ESP32 ESP8266=$State_ESP8266 RP2040=$State_RP2040 Maixduino=$State_Maixduino SparkFun=$State_SparkFun"
 
     ${If} $State_Arduino == ${BST_CHECKED}
         !insertmacro _ExtractPack "arduino" "Arduino"
