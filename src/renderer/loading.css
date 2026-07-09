@@ -1,5 +1,7 @@
 html, body {
-    background-color: transparent;
+    /* Brand blue to match the static index.html splash and the (now non-transparent) loading
+       window — so there's no white/transparent flash between the splash and this React route. */
+    background-color: #004AAD;
 }
 
 .loadingBox {
@@ -27,7 +29,7 @@ html, body {
     font-size: 1.25rem;
     font-weight: 600;
     line-height: 1.6;
-    color: #004AAD;
+    color: #FFFFFF;            /* white — readable on the blue loading window */
     letter-spacing: 0.5px;
 }
 

@@ -26,6 +26,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const { execFileSync } = require('child_process');
 
 const NS = 'RoboCodersStudio';   // product namespace for anti-rollback stamp locations
@@ -107,6 +108,48 @@ function writeLastRun(secret, machineId, date) {
   regWrite(value);
 }
 
+/**
+ * OPTIONAL online time anchor (Layer C). Best-effort fetch of trusted UTC from a
+ * public HTTPS server's `Date` response header. Races several well-known hosts and
+ * resolves to the first answer (ms since epoch), or null if none reply in time.
+ *
+ * This is the ONLY reliable way to detect a forward clock change offline-undetectable
+ * within MAX_FORWARD_GAP — but it is purely opportunistic: when it returns null the
+ * caller falls back to the offline rules, so the app stays fully usable without internet.
+ *
+ * @param {number} timeoutMs per-request + overall budget
+ * @returns {Promise<number|null>}
+ */
+function fetchTrustedTimeMs(timeoutMs = 2000) {
+  const HOSTS = ['www.cloudflare.com', 'www.google.com', 'www.microsoft.com'];
+  return new Promise((resolve) => {
+    let settled = false;
+    let pending = HOSTS.length;
+    const finish = (ms) => {
+      if (settled) return;
+      if (ms !== null) { settled = true; resolve(ms); return; }
+      if (--pending <= 0) { settled = true; resolve(null); }
+    };
+    const overall = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, timeoutMs + 250);
+    if (overall.unref) overall.unref();
+
+    for (const host of HOSTS) {
+      let req;
+      try {
+        req = https.request({ host, method: 'HEAD', path: '/', timeout: timeoutMs }, (res) => {
+          const d = res.headers && res.headers.date;
+          res.destroy();
+          const ms = d ? Date.parse(d) : NaN;
+          finish(Number.isNaN(ms) ? null : ms);
+        });
+      } catch (_) { finish(null); continue; }
+      req.on('error', () => finish(null));
+      req.on('timeout', () => { try { req.destroy(); } catch (_) {} finish(null); });
+      req.end();
+    }
+  });
+}
+
 /** How many locations currently hold a trusted value (for diagnostics). */
 function locationsWithValue(secret, machineId) {
   let n = 0;
@@ -117,4 +160,4 @@ function locationsWithValue(secret, machineId) {
   return n;
 }
 
-module.exports = { readLastRun, writeLastRun, locationsWithValue, fileLocations, NS };
+module.exports = { readLastRun, writeLastRun, locationsWithValue, fileLocations, fetchTrustedTimeMs, NS };

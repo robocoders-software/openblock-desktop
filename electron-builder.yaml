@@ -22,10 +22,14 @@ publish:
 artifactName: "RoboCoders-studio-Desktop_v${version}_${os}_${arch}.${ext}"
 
 fileAssociations:
-  ext: rc
-  name: RoboCoders-studio project file
-  role: Editor
-  icon: buildResources/OpenBlockFile.ico
+  - ext: rc
+    name: RoboCoders-studio project file
+    role: Editor
+    icon: buildResources/OpenBlockFile.ico
+  - ext: rcml
+    name: RoboCoders ML Model
+    role: Editor
+    icon: buildResources/OpenBlockMLFile.ico
 
 compression: maximum
 
@@ -67,8 +71,16 @@ win:
 #   publisherDisplayName: "OpenBlock Team"
 #   publisher: "CN=2EC43DF1-469A-4119-9AB9-568A0A1FF65F"
 nsis:
-  oneClick: false # allow user to choose per-user or per-machine
-  allowToChangeInstallationDirectory: true
+  oneClick: false # assisted installer (welcome, board-selection, progress) — not silent
+  # Force a SINGLE all-users install location. Without this the user could install
+  # per-user AND all-users, producing TWO parallel copies. With perMachine:true + a
+  # stable appId, a new build always UPGRADES the existing install in place (overwrites)
+  # instead of creating a second one. Also matches the license (machine-bound) + board
+  # folder ACL model, which already assume an all-users Program Files install.
+  perMachine: true
+  # Keep a fixed install directory too, so a new build can't land in a different folder
+  # and become a second copy; it always targets the recorded location.
+  allowToChangeInstallationDirectory: false
   include: buildResources/installer.nsh
   buildUniversalInstaller: false
 #   license: LICENSE

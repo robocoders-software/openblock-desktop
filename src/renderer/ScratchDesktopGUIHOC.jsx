@@ -193,6 +193,38 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                 this.platform = args;
             });
 
+            // Custom close flow: the main process asks us before actually closing the window
+            // (instead of the native Stay/Leave dialog). Use _projectDirty (reliably cleared on
+            // save — unlike project-saver-hoc's beforeunload flag) and the themed
+            // Save / Don't Save / Cancel dialog, then tell main whether to proceed.
+            this._onAppCloseRequested = async () => {
+                // Tell main a handler exists so it doesn't auto-close after its 700ms fallback.
+                ipcRenderer.send('app-close-ack');
+                if (this._closeDialogOpen) return;             // ignore repeated X clicks
+                this._closeDialogOpen = true;
+                try {
+                    if (this._projectDirty) {
+                        const choice = await showAppDialog({
+                            type:      'question',
+                            title:     'Unsaved Changes',
+                            message:   'You have unsaved changes.',
+                            detail:    'Save your project before closing?',
+                            buttons:   ['Save', "Don't Save", 'Cancel'],
+                            defaultId: 0
+                        });
+                        if (choice === 2) return;              // Cancel — keep the app open
+                        if (choice === 0) {
+                            await this.handleSaveBeforeOpen();  // saves (or Save As); clears _projectDirty
+                            if (this._projectDirty) return;     // Save As cancelled — stay open
+                        }
+                    }
+                    ipcRenderer.send('app-confirm-close');
+                } finally {
+                    this._closeDialogOpen = false;
+                }
+            };
+            ipcRenderer.on('app-close-requested', this._onAppCloseRequested);
+
             // Track last-saved time and sync dirty state to window title
             this._lastSavedAt = null;
             this._projectDirty = false;
@@ -256,13 +288,8 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
                     ipcRenderer.invoke('clear-current-project-path').catch(() => {});
                     // Clear the active ML model reference so it doesn't auto-load into the new project
                     if (typeof window !== 'undefined') window.__openblockMLModel = null;
-                    // Explicitly unload the teachableMachine extension from the VM so its blocks
-                    // don't appear in the fresh project's toolbox (VM doesn't unload extensions
-                    // automatically when a new project is loaded)
-                    if (this.props.vm && this.props.vm.extensionManager &&
-                        this.props.vm.extensionManager.isExtensionLoaded('teachableMachine')) {
-                        this.props.vm.extensionManager.unloadExtension('teachableMachine');
-                    }
+                    // Clean palette for the fresh project (Pen, Music, ML, …). See _unloadAllExtensions.
+                    this._unloadAllExtensions();
                     // Notify gui.jsx to reset only the transient loading/pending ML states
                     window.dispatchEvent(new CustomEvent('robocoders:new-project'));
                     this.props.onRequestNewProject();
@@ -278,6 +305,7 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             ipcRenderer.removeListener('setTitleFromOpen', this.handleSetTitleFromOpen);
             ipcRenderer.removeListener('main-show-dialog', this._onMainShowDialog);
             ipcRenderer.removeListener('main-show-perm-dialog', this._onMainShowPermDialog);
+            if (this._onAppCloseRequested) ipcRenderer.removeListener('app-close-requested', this._onAppCloseRequested);
             if (this._autoSaveInterval) {
                 clearInterval(this._autoSaveInterval);
                 this._autoSaveInterval = null;
@@ -415,10 +443,9 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             ipcRenderer.invoke('clear-crash-backup').catch(() => {});
             ipcRenderer.invoke('clear-current-project-path').catch(() => {});
             if (typeof window !== 'undefined') window.__openblockMLModel = null;
-            if (this.props.vm && this.props.vm.extensionManager &&
-                this.props.vm.extensionManager.isExtensionLoaded('teachableMachine')) {
-                this.props.vm.extensionManager.unloadExtension('teachableMachine');
-            }
+            // Unload ALL extensions (not just ML) so File ▸ New starts with a clean palette —
+            // Pen, Music, Video Sensing, etc. were lingering because only teachableMachine was unloaded.
+            this._unloadAllExtensions();
             window.dispatchEvent(new CustomEvent('robocoders:new-project'));
             this.props.onRequestNewProject();
         }
@@ -446,10 +473,9 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
             ipcRenderer.invoke('clear-crash-backup').catch(() => {});
             ipcRenderer.invoke('clear-current-project-path').catch(() => {});
             if (typeof window !== 'undefined') window.__openblockMLModel = null;
-            if (this.props.vm && this.props.vm.extensionManager &&
-                this.props.vm.extensionManager.isExtensionLoaded('teachableMachine')) {
-                this.props.vm.extensionManager.unloadExtension('teachableMachine');
-            }
+            // Unload ALL extensions for a clean palette. The selected board/device is tracked
+            // separately (_loadedDevice), so its blocks stay — only Scratch extensions are cleared.
+            this._unloadAllExtensions();
             window.dispatchEvent(new CustomEvent('robocoders:new-project'));
             this.props.onRequestNewProject();
             return true;
@@ -477,6 +503,32 @@ const ScratchDesktopGUIHOC = function (WrappedComponent) {
         }
         handleClickInstallDriver () {
             ipcRenderer.send('installDriver');
+        }
+        /* Unload EVERY loaded extension (Pen, Music, Video Sensing, Text to Speech, Translate,
+           Makey Makey, teachableMachine, …) so a fresh project starts with a clean palette. The VM
+           does NOT unload extensions automatically when a new project is loaded, so without this
+           they linger in the new project's toolbox. The selected DEVICE is tracked separately
+           (extensionManager._loadedDevice), so this does NOT remove board blocks in Robotics mode.
+           Snapshot the keys first since unloadExtension mutates the map. Called from EVERY
+           new-project path (onRegisterNewProject, File ▸ New, and return-to-home). */
+        _unloadAllExtensions () {
+            const vm = this.props.vm;
+            const em = vm && vm.extensionManager;
+            if (em && em._loadedExtensions && em._loadedExtensions.size) {
+                Array.from(em._loadedExtensions.keys()).forEach(id => {
+                    try {
+                        em.unloadExtension(id);
+                    } catch (_) { /* best-effort per-extension unload */ }
+                });
+            }
+            // Video Sensing turns the WEBCAM on (a runtime-level IO device) when it loads, but
+            // unloading the extension does NOT turn it back off — so the live feed would keep
+            // showing on the stage and a "new" project wouldn't look clean. Explicitly disable
+            // the camera here so New / New Blocks fully resets the stage. Safe if video is off.
+            try {
+                const video = vm && vm.runtime && vm.runtime.ioDevices && vm.runtime.ioDevices.video;
+                if (video && typeof video.disableVideo === 'function') video.disableVideo();
+            } catch (_) { /* best-effort camera shutdown */ }
         }
         handleClickDevicePermissions () {
             this.setState({showDevicePermissionsModal: true});

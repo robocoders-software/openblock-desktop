@@ -1,5 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
+import os from 'os';
+import {spawn} from 'child_process';
 import yauzl from 'yauzl';
 import {ipcMain, app} from 'electron';
 
@@ -117,6 +119,87 @@ const extractZip = (zipPath, destDir, {onProgress, isCancelled}) =>
         });
     });
 
+/* Escape a string for safe embedding inside a PowerShell single-quoted literal. */
+const psSingleQuote = s => `'${String(s).replace(/'/g, "''")}'`;
+
+/* ── Long-path-safe, ELEVATED extraction ─────────────────────────────────────
+ * Used when the packages dir isn't writable by the current (unelevated) process —
+ * e.g. an all-users install under C:\Program Files. The bundled NSIS installer
+ * extracts boards into that same folder while elevated, so the "install a board
+ * later" flow needs the same elevation. We relaunch the extraction with ONE UAC
+ * prompt, mirroring extractZip()'s logic in PowerShell/.NET: each entry is copied
+ * through a \\?\ long path so ESP32/RP2040 deep paths (>260 chars) succeed —
+ * PowerShell's Expand-Archive cannot handle them, which is why we don't use it.
+ */
+const elevatedExtract = (zipPath, destDir, pkgId, rawBytes, {send}) =>
+    new Promise((resolve, reject) => {
+        // Self-contained extractor script (paths baked in to avoid arg-quoting issues).
+        const script = [
+            `$ErrorActionPreference = 'Stop'`,
+            `$Zip  = ${psSingleQuote(zipPath)}`,
+            `$Dest = ${psSingleQuote(destDir)}`,
+            `Add-Type -AssemblyName System.IO.Compression.FileSystem`,
+            `$archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)`,
+            `try {`,
+            `  foreach ($entry in $archive.Entries) {`,
+            `    $rel  = $entry.FullName -replace '/', '\\'`,
+            `    $full = [System.IO.Path]::GetFullPath((Join-Path $Dest $rel))`,
+            `    $lp   = '\\\\?\\' + $full`,
+            `    if ($entry.FullName.EndsWith('/')) {`,
+            `      [System.IO.Directory]::CreateDirectory($lp) | Out-Null`,
+            `    } else {`,
+            `      [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($lp)) | Out-Null`,
+            `      $in = $entry.Open(); $out = [System.IO.File]::Create($lp)`,
+            `      try { $in.CopyTo($out) } finally { $out.Dispose(); $in.Dispose() }`,
+            `    }`,
+            `  }`,
+            `} finally { $archive.Dispose() }`
+        ].join('\r\n');
+
+        const ps1 = path.join(os.tmpdir(), `rc-board-${pkgId}-${Date.now()}.ps1`);
+        try {
+            fs.writeFileSync(ps1, script, 'utf8');
+        } catch (e) { return reject(e); }
+
+        // Outer (unelevated) PowerShell elevates the extractor and WAITS for it, then
+        // surfaces its exit code. A thrown Start-Process (UAC declined) maps to 1223.
+        const outer =
+            `try { $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden ` +
+            `-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',${psSingleQuote(ps1)}; ` +
+            `exit $p.ExitCode } catch { exit 1223 }`;
+
+        const child = spawn('powershell.exe',
+            ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', outer],
+            {windowsHide: true});
+
+        const pkgDir = path.join(destDir, pkgId);
+        const poll = setInterval(() => {
+            if (rawBytes > 0) {
+                const size = getDirSizeBytes(pkgDir);
+                send({pkgId, percent: Math.min(99, Math.round((size / rawBytes) * 100))});
+            }
+        }, 600);
+
+        let stderr = '';
+        child.stderr.on('data', d => { stderr += d.toString(); });
+
+        const cleanup = () => { clearInterval(poll); fs.remove(ps1).catch(() => {}); };
+
+        child.on('error', err => { cleanup(); reject(err); });
+        child.on('close', code => {
+            cleanup();
+            if (code === 0 && isInstalled(pkgId)) return resolve();
+            // Failed/declined — remove any partial extraction so a retry starts clean.
+            removePackageDir(pkgId).catch(() => {});
+            if (code === 1223) {
+                return reject(new Error(
+                    'Administrator permission is required to install this board. ' +
+                    'Please choose "Yes" on the Windows prompt and try again.'));
+            }
+            reject(new Error(stderr.trim() || 'Board installation failed.'));
+        });
+    });
+
 /* ── IPC: board-manager:list ─────────────────────────────────────────────── */
 ipcMain.handle('board-manager:list', () => {
     const manifest = readManifest();
@@ -176,16 +259,16 @@ ipcMain.handle('board-manager:install', async (event, pkgId) => {
     const destDir = packagesDir();
     await fs.ensureDir(destDir);
 
-    /* Verify write access early — catches Program Files permission issues */
+    /* Probe write access. An all-users install (C:\Program Files) is read-only for the
+     * unelevated app — in that case we extract via a one-time UAC elevation instead of
+     * failing, matching how the bundled installer extracts boards while elevated. */
+    let writable = true;
     const testFile = path.join(destDir, `.write-test-${pkgId}`);
     try {
         await fs.writeFile(testFile, '');
         await fs.remove(testFile);
     } catch (_) {
-        throw new Error(
-            `Cannot write to the installation folder (${destDir}). ` +
-            `Try running the app as administrator.`
-        );
+        writable = false;
     }
 
     let cancelled = false;
@@ -198,13 +281,20 @@ ipcMain.handle('board-manager:install', async (event, pkgId) => {
     };
 
     try {
-        await extractZip(zipPath, destDir, {
-            isCancelled: () => cancelled,
-            onProgress: (done, total) => {
-                const pct = total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0;
-                send({pkgId, percent: pct});
-            }
-        });
+        if (writable) {
+            await extractZip(zipPath, destDir, {
+                isCancelled: () => cancelled,
+                onProgress: (done, total) => {
+                    const pct = total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0;
+                    send({pkgId, percent: pct});
+                }
+            });
+        } else {
+            /* Program Files / all-users install — extract with a single elevation prompt.
+             * (Cancel isn't supported once the elevated process is running.) */
+            send({pkgId, percent: 0});
+            await elevatedExtract(zipPath, destDir, pkgId, info.rawBytes || 0, {send});
+        }
         _active.delete(pkgId);
         send({pkgId, percent: 100, done: true});
         return {pkgId, installed: true};
@@ -216,7 +306,7 @@ ipcMain.handle('board-manager:install', async (event, pkgId) => {
             throw new Error('Installation cancelled.');
         }
         send({pkgId, percent: 0, error: err.message});
-        throw new Error(`Extraction failed: ${err.message}`);
+        throw new Error(err.message);
     }
 });
 

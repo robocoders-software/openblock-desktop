@@ -50,9 +50,11 @@ class OpenblockDesktopLink {
     installDriver (callback = null) {
         const driverPath = path.join(this.appPath, 'drivers');
         if ((os.platform() === 'win32') && (os.arch() === 'x64')) {
-            execFile('install_x64.bat', [], {cwd: driverPath});
+            // Use the ABSOLUTE path to the script so it is found regardless of cwd. The script
+            // itself now resolves each bundled driver via %~dp0, so no internet is needed.
+            execFile(path.join(driverPath, 'install_x64.bat'), [], {cwd: driverPath});
         } else if ((os.platform() === 'win32') && (os.arch() === 'ia32')) {
-            execFile('install_x86.bat', [], {cwd: driverPath});
+            execFile(path.join(driverPath, 'install_x86.bat'), [], {cwd: driverPath});
         } else if ((os.platform() === 'darwin')) {
             spawn('sh', ['install.sh'], {shell: true, cwd: driverPath});
         } else if ((os.platform() === 'linux')) {

@@ -1,5 +1,5 @@
 import React, {useState, useEffect, useCallback} from 'react';
-import {ipcRenderer} from 'electron';
+import {ipcRenderer, clipboard} from 'electron';
 import {productName, version} from '../../package.json';
 
 import logo from '../icon/logo-OpenBlockcc.svg';
@@ -7,23 +7,22 @@ import styles from './activation.css';
 
 // Turn a raw checkStartup reason into a friendly title/body + whether a "Try Again"
 // (re-check) makes sense (e.g. after the user corrects their system clock).
-const mapReason = reason => {
+const mapReason = (reason) => {
     if (!reason) return null;
     const r = reason.toLowerCase();
     if (r.includes('clock')) {
         return {
-            title: 'System clock change detected',
-            body: 'Your device’s date & time appear to have been changed. Set the correct ' +
-                'date & time, then click “Try Again”. Your existing license will resume ' +
-                'automatically — you do not need a new key.',
+            title: 'Incorrect date & time',
+            body: 'Please set the correct date & time, then click “Try Again”.',
             retry: true
         };
     }
     if (r.includes('expired')) {
         return {
             title: 'License expired',
-            body: `${reason}. Enter a new activation key below to continue.`,
-            retry: false
+            body: `${reason}. If your device date is set to the future, correct it and click ` +
+                '“Try Again”. If the license has genuinely ended, enter a new activation key below.',
+            retry: true
         };
     }
     if (r.includes('not valid until')) {
@@ -57,18 +56,26 @@ const ActivationApp = () => {
         // Why is this screen showing? (clock rollback / expired / etc.)
         ipcRenderer.invoke('license:get-status')
             .then(s => {
-                if (s && s.activated && s.reason) setWarning(mapReason(s.reason));
+                if (s && s.activated && s.reason) setWarning(mapReason(s.reason, s));
             })
             .catch(() => {});
     }, []);
 
     const copyMachineId = useCallback(() => {
-        navigator.clipboard.writeText(machineId)
-            .then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1800);
-            })
-            .catch(() => {});
+        const flashCopied = () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1800);
+        };
+        // Electron's clipboard module works reliably in the renderer (no secure-context
+        // requirement, synchronous). Fall back to the web Clipboard API only if it's missing.
+        try {
+            clipboard.writeText(machineId);
+            flashCopied();
+            return;
+        } catch (_) { /* fall through to web API */ }
+        try {
+            navigator.clipboard.writeText(machineId).then(flashCopied).catch(() => {});
+        } catch (_) { /* clipboard unavailable */ }
     }, [machineId]);
 
     const activate = useCallback(async () => {
@@ -104,7 +111,7 @@ const ActivationApp = () => {
                 setStatus('success'); // main relaunches
                 return;
             }
-            setWarning(mapReason((r && r.reason) || 'Still blocked'));
+            setWarning(mapReason((r && r.reason) || 'Still blocked', r || {}));
         } catch (_) { /* ignore */ }
         setRechecking(false);
     }, []);
@@ -113,7 +120,15 @@ const ActivationApp = () => {
         if (e.key === 'Enter') activate();
     }, [activate]);
 
-    const handleKeyChange = useCallback(e => setKey(e.target.value), []);
+    // Auto-format the activation key as the user types: keep only Base32 characters (A-Z, 2-7),
+    // uppercase them, cap at 21, and insert a "-" automatically after every 7 → XXXXXXX-XXXXXXX-XXXXXXX.
+    // The user no longer needs to type the dashes. base32Decode strips dashes/case, so this is a
+    // pure typing convenience (pasting a key with or without dashes also re-formats correctly).
+    const handleKeyChange = useCallback(e => {
+        const clean = e.target.value.toUpperCase().replace(/[^A-Z2-7]/g, '').slice(0, 21);
+        const groups = clean.match(/.{1,7}/g) || [];
+        setKey(groups.join('-'));
+    }, []);
 
     return (
         <div className={styles.wrap}>
@@ -177,6 +192,10 @@ const ActivationApp = () => {
                                 onChange={handleKeyChange}
                                 onKeyDown={onKeyDown}
                                 placeholder="XXXXXXX-XXXXXXX-XXXXXXX"
+                                /* No maxLength: handleKeyChange already strips separators and caps at
+                                   21 Base32 chars, so a key PASTED in any grouping (5-5-5…, spaces,
+                                   lowercase) is captured in full and re-normalized. A fixed maxLength
+                                   would truncate a longer-grouped paste before the handler ran. */
                                 spellCheck={false}
                                 autoFocus
                             />

@@ -104,27 +104,121 @@ const licenseManager = createLicenseManager(LICENSE_FILE);
 // explain WHY it is showing (e.g. clock rollback / expired) instead of appearing blank.
 let _licenseStartupStatus = null;
 
+// ── Layer B — runtime clock-tamper watch ─────────────────────────────────────────
+// A monotonic clock (process.hrtime) CANNOT be set, so it measures true elapsed time
+// regardless of the wall clock. If the wall clock drifts from "launch time + real
+// elapsed" by more than the tolerance, the user changed the system date WHILE the app
+// was open — in EITHER direction, fully offline, reliably. We then block IN PLACE (no
+// restart): hide the workspace and show the licence/blocked screen in the SAME running
+// session. The HWM is never advanced here, so correcting the clock and pressing
+// "Try Again" restores the workspace in place. Tolerance is generous so NTP steps / DST
+// (which don't affect UTC Date.now anyway) never false-trip.
+let _clockWatchTimer = null;
+let _runtimeBlocked = false; // true while the app is blocked mid-session for a clock change
+
+// Block the running app immediately, without closing/reopening it.
+const enterRuntimeClockBlock = () => {
+    if (_runtimeBlocked) return;
+    _runtimeBlocked = true;
+    _licenseStartupStatus = {
+        ok: false,
+        activated: true,
+        reason: 'Clock manipulation detected — the system date was changed'
+    };
+    // Show the blocked screen in THIS session (reuse the activation window).
+    try {
+        if (!_windows.activation || _windows.activation.isDestroyed()) {
+            _windows.activation = createActivationWindow();
+        } else {
+            _windows.activation.show();
+            _windows.activation.focus();
+        }
+    } catch (e) { log.warn('[license] could not show block screen:', e && e.message); }
+    // HIDE (not destroy) the workspace so it can't be used while blocked but the user's
+    // unsaved work is preserved for an in-place recovery once the clock is corrected.
+    try {
+        if (_windows.main && !_windows.main.isDestroyed()) _windows.main.hide();
+    } catch (_) { /* best-effort */ }
+};
+
+// Undo enterRuntimeClockBlock without a restart — called after a successful re-check.
+const exitRuntimeClockBlock = () => {
+    _runtimeBlocked = false;
+    try {
+        if (_windows.main && !_windows.main.isDestroyed()) { _windows.main.show(); _windows.main.focus(); }
+    } catch (_) {}
+    try {
+        if (_windows.activation && !_windows.activation.isDestroyed()) _windows.activation.destroy();
+    } catch (_) {}
+    startClockTamperWatch(); // re-arm with a fresh baseline at the corrected time
+};
+
+function startClockTamperWatch () {
+    if (_clockWatchTimer) return;
+    const baseWall = Date.now();
+    const baseMono = process.hrtime.bigint();
+    const TOLERANCE_MS = 5 * 60 * 1000; // 5 minutes
+    _clockWatchTimer = setInterval(() => {
+        try {
+            const elapsedMono = Number((process.hrtime.bigint() - baseMono) / 1000000n); // ms
+            const drift = Date.now() - (baseWall + elapsedMono);
+            if (Math.abs(drift) > TOLERANCE_MS) {
+                log.warn(`[license] runtime clock change detected (drift ${Math.round(drift / 1000)}s) — blocking in place`);
+                clearInterval(_clockWatchTimer);
+                _clockWatchTimer = null;
+                enterRuntimeClockBlock();
+            }
+        } catch (_) { /* keep watching */ }
+    }, 30 * 1000);
+    if (_clockWatchTimer.unref) _clockWatchTimer.unref();
+}
+
 ipcMain.handle('license:get-machine-id', () => {
     try { return licenseManager.getMachineId(); } catch (_) { return null; }
 });
 
-/* Why is the activation screen showing? { activated, reason } — no sensitive data. */
+/* Why is the activation screen showing? { activated, reason } — no sensitive data.
+   For a clock-tamper block we also pass the valid date range so the screen can tell
+   the user exactly which date to set to recover. */
 ipcMain.handle('license:get-status', () => ({
-    activated: !!(_licenseStartupStatus && _licenseStartupStatus.activated),
-    reason:    (_licenseStartupStatus && _licenseStartupStatus.reason) || null
+    activated:     !!(_licenseStartupStatus && _licenseStartupStatus.activated),
+    reason:        (_licenseStartupStatus && _licenseStartupStatus.reason) || null,
+    lastValidDate: (_licenseStartupStatus && _licenseStartupStatus.lastValidDate) || null,
+    expiryDate:    (_licenseStartupStatus && _licenseStartupStatus.expiryDate) || null
 }));
 
 /* Re-run the startup check (e.g. after the user corrects their system clock).
    If it now passes, relaunch into the app; otherwise return the updated reason. */
-ipcMain.handle('license:recheck', () => {
+ipcMain.handle('license:recheck', async () => {
     try {
+        // Layer C first: when online, a verified-correct clock SELF-HEALS the HWM (so a
+        // legitimately long-absent user recovers), while a clock that is genuinely off
+        // (either direction) is reported as tamper regardless of the offline result.
+        let online = {checked: false};
+        try { online = await licenseManager.verifyClockOnline(); } catch (_) { online = {checked: false}; }
+        if (online.checked && !online.ok) {
+            _licenseStartupStatus = {ok: false, activated: true, reason: online.reason};
+            return {ok: false, activated: true, reason: online.reason};
+        }
         const s = licenseManager.checkStartup();
         _licenseStartupStatus = s;
         if (s.ok) {
+            if (_runtimeBlocked) {
+                // Mid-session block → restore the workspace IN PLACE (no restart, work preserved).
+                exitRuntimeClockBlock();
+                return {ok: true};
+            }
+            // Startup-gate block → relaunch once into the licensed app.
             setTimeout(() => { app.relaunch(); app.exit(0); }, 700);
             return {ok: true};
         }
-        return {ok: false, activated: !!s.activated, reason: s.reason || null};
+        return {
+            ok: false,
+            activated: !!s.activated,
+            reason: s.reason || null,
+            lastValidDate: s.lastValidDate || null,
+            expiryDate: s.expiryDate || null
+        };
     } catch (e) {
         return {ok: false, activated: false, reason: (e && e.message) || 'License check failed'};
     }
@@ -591,6 +685,10 @@ const createWindow = ({search = null, url = 'index.html', ...browserWindowOption
     const window = new BrowserWindow({
         useContentSize: true,
         show: false,
+        // Brand-blue base so a window never paints WHITE before its content composites. Every
+        // window loads index.html first, whose splash is also #004AAD, so the blue shows from the
+        // very first frame (no white flash on launch). Individual windows can override via options.
+        backgroundColor: '#004AAD',
         webPreferences: {
             contextIsolation: false,
             nodeIntegration: true,
@@ -699,16 +797,23 @@ const createPrivacyWindow = () => {
    licensed. Has no parent (the main window does not exist at this point). */
 const createActivationWindow = () => {
     const window = createWindow({
-        width: 480,
-        height: 660,
+        // Sensible un-maximized fallback size; the window opens MAXIMIZED below so the page
+        // fills the whole screen (blue background edge-to-edge, card centered) like the main app.
+        width: 1000,
+        height: 720,
         search: 'route=activation',
-        title: `Activate ${productName}`,
-        resizable: false,
-        maximizable: false
+        title: `Activate ${productName}`
     });
-    window.once('ready-to-show', () => window.show());
+    window.once('ready-to-show', () => {
+        try { window.maximize(); } catch (_) { /* fall back to the default size */ }
+        window.show();
+    });
     window.on('closed', () => {
         delete _windows.activation;
+        // If this was a mid-session clock block and the user closed it WITHOUT correcting the
+        // clock (so the workspace is still hidden), quit rather than leave an invisible,
+        // unusable instance running in the background.
+        if (_runtimeBlocked) app.quit();
     });
     return window;
 };
@@ -733,8 +838,12 @@ const createLoadingWindow = () => {
         height: 150,
         frame: false,
         resizable: false,
-        transparent: true,
-        hasShadow: false,
+        // Solid brand-blue background — NOT transparent. A `transparent: true` window flashes white
+        // on Windows before the renderer composites; as the renderer bundle grew this became the
+        // visible "white screen, then RoboCoders is loading…" regression. With a solid
+        // backgroundColor the window is the right colour the instant it appears, and index.html's
+        // splash + loading.css both use #004AAD, so the loading text shows immediately, no flash.
+        backgroundColor: '#004AAD',
         search: 'route=loading',
         title: `Loading ${productName} ${version}`
     });
@@ -986,7 +1095,7 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 
 // create main BrowserWindow when electron is ready
-app.on('ready', () => {
+app.on('ready', async () => {
     desktopLink = new DesktopLink();
 
     // Serve external-resources/* via robocoders-resource:// — no HTTP server needed.
@@ -1255,11 +1364,13 @@ app.on('ready', () => {
 
             await extractMLDir(zip, targetId);
 
-            /* extractMLDir wrote the original id/name from the zip. When importing as a copy,
-               rewrite the extracted project.json so its id/name match the new target.
-               Training samples and model weights are keyed by per-sample ids (not the project
-               id), so only project.json needs updating. */
-            if (collision) {
+            /* ALWAYS stamp the IMPORT time onto the extracted project.json so "My Projects" shows
+               when the model was imported on THIS machine — not the source machine's last-edited
+               time (which is what the zip carries). Previously this only ran for the copy/collision
+               case, so a fresh import kept the foreign timestamp. When imported as a copy we also
+               rewrite id/name. Training samples and model weights are keyed by per-sample ids (not
+               the project id), so only project.json needs updating. */
+            {
                 const metaPath = path.join(mlDir(targetId), 'project.json');
                 try {
                     const extracted = JSON.parse(await fs.readFile(metaPath, 'utf8'));
@@ -1268,13 +1379,14 @@ app.on('ready', () => {
                         ...extracted,
                         id:        targetId,
                         name:      targetName,
-                        createdAt: now,
-                        updatedAt: now,
+                        // A copy is a brand-new project (now); a same-id re-import keeps its origin.
+                        createdAt: collision ? now : (extracted.createdAt || now),
+                        updatedAt: now,   // ← import time → shown as "Last Updated"
                         savedAt:   now
                     };
                     await fs.writeFile(metaPath, JSON.stringify(updated));
                 } catch (e) {
-                    log.warn('[main] ml-open-ob-file: could not rewrite copy metadata:', e.message);
+                    log.warn('[main] ml-open-ob-file: could not stamp import metadata:', e.message);
                 }
             }
 
@@ -1643,6 +1755,28 @@ app.on('ready', () => {
         log.error('[license] checkStartup failed:', e && e.message);
         startup = {ok: false, activated: false, reason: 'License check failed'};
     }
+    // Layer C — opportunistic online anchor. Only runs when the OS reports connectivity
+    // (zero penalty offline). When it answers it is AUTHORITATIVE over the offline result:
+    //   • clock verified correct → HWM self-healed → re-run the offline check (a user who
+    //     was away longer than MAX_FORWARD_GAP now passes).
+    //   • clock genuinely off    → force a tamper block, even if the offline check passed
+    //     (this is what catches a forward jump SMALLER than the offline gap).
+    try {
+        const online = await licenseManager.verifyClockOnline();
+        if (online.checked) {
+            if (online.ok) {
+                startup = licenseManager.checkStartup();
+            } else {
+                startup = {
+                    ok: false, activated: true, reason: online.reason,
+                    lastValidDate: startup.lastValidDate || null,
+                    expiryDate: startup.expiryDate || null
+                };
+            }
+        }
+    } catch (e) {
+        log.warn('[license] online clock verify skipped:', e && e.message);
+    }
     if (!startup.ok) {
         _licenseStartupStatus = startup; // so the activation screen can explain why
         _windows.activation = createActivationWindow();
@@ -1657,6 +1791,44 @@ app.on('ready', () => {
         _windows.main = createMainWindow();
         _windows.main.on('closed', () => {
             delete _windows.main;
+        });
+        // Layer B — runtime clock-tamper watch. Starts once the app is actually open.
+        startClockTamperWatch();
+        // Custom unsaved-changes flow on close. Instead of the native will-prevent-unload
+        // Stay/Leave dialog, ask the RENDERER (which knows the real dirty state via _projectDirty —
+        // reliably cleared on save — and has the save logic + themed Save/Don't Save/Cancel dialog).
+        // It replies with 'app-confirm-close' to proceed; we then destroy() the window, which
+        // bypasses beforeunload so the native dialog never appears. This also fixes the "dialog
+        // shows even after saving" bug, because _projectDirty (not project-saver-hoc's stale flag)
+        // is what's checked.
+        _windows.main.on('close', event => {
+            if (_windows.main && _windows.main._forceClose) return; // confirmed — let it close
+            event.preventDefault();
+            if (_windows.main && _windows.main.webContents && !_windows.main.webContents.isDestroyed()) {
+                _windows.main._closeAcked = false;
+                _windows.main.webContents.send('app-close-requested');
+                // The editor HOC is only mounted once the user has entered Blocks/Robotics. On the
+                // initial home screen nothing answers — so if no handler ACKs within 700ms, just
+                // close (there's no project to save).
+                setTimeout(() => {
+                    if (_windows.main && !_windows.main._closeAcked && !_windows.main._forceClose) {
+                        _windows.main._forceClose = true;
+                        _windows.main.destroy();
+                    }
+                }, 700);
+            }
+        });
+        // A renderer handler exists and is taking over the close decision — don't auto-close.
+        ipcMain.on('app-close-ack', () => {
+            if (_windows.main) _windows.main._closeAcked = true;
+        });
+        // Renderer says it's OK to close (saved, or user chose "Don't Save"). destroy() skips the
+        // close handler + beforeunload, so there's no second prompt.
+        ipcMain.on('app-confirm-close', () => {
+            if (_windows.main) {
+                _windows.main._forceClose = true;
+                _windows.main.destroy();
+            }
         });
 
         _windows.about = createAboutWindow();

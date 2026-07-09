@@ -2,99 +2,112 @@
 !include LogicLib.nsh
 !include StrFunc.nsh
 !include nsDialogs.nsh
-; UAC.nsh defines ${UAC_IsInnerInstance}. This custom script is parsed in the shared header
-; BEFORE the main template includes UAC.nsh (via multiUser.nsh), so include it here too — its
-; `!ifndef UAC_HDR__INC` guard makes the later inclusion a harmless no-op. Without this, the
-; ${UAC_IsInnerInstance} guard below would fail to compile.
-!include UAC.nsh
 ${StrRep}
 
-; ── Board selection page variables ────────────────────────────────────────────
-Var BoardDialog
-Var Check_Arduino
-Var Check_ESP32
-Var Check_ESP8266
-Var Check_RP2040
-Var Check_Maixduino
-Var Check_SparkFun
+; ── Board selection page (shown FIRST, before the install-mode page) ───────────
+; MUST be registered BEFORE PAGE_INSTALL_MODE: for a per-machine install, electron-builder
+; elevates (relaunches as the inner instance) when the user picks "all users" on the install-mode
+; page. Any page registered AFTER install-mode therefore renders in the elevated INNER instance,
+; where our ${UAC_IsInnerInstance} guard aborts it — so the page would never appear. The
+; customWelcomePage hook (assistedInstaller.nsh, before PAGE_INSTALL_MODE) shows it in the OUTER
+; instance before elevation; the inner instance re-runs it and the guard skips it (no double show).
+;
+; Why a macro hook (not a top-level `Page custom`): the page uses ${UAC_IsInnerInstance}, and this
+; script is !include'd very early — BEFORE electron-builder registers the UAC plugin directory — so
+; a top-level UAC::_ call fails to compile ("Plugin not found"). The hook is expanded later (after
+; the plugin dir is registered) and only in the installer pass, never the uninstaller.
+;
+; The board Var's are declared INSIDE this macro too: they're used only by this page and by the
+; customInstall macro (inserted later, in the installer pass). Declaring them at top level would
+; leave them unreferenced in the uninstaller pass → NSIS "warning 6001 ... wasting memory", which
+; electron-builder treats as a fatal error.
+!macro customWelcomePage
 
-Var State_Arduino
-Var State_ESP32
-Var State_ESP8266
-Var State_RP2040
-Var State_Maixduino
-Var State_SparkFun
+    Var BoardDialog
+    Var Check_Arduino
+    Var Check_ESP32
+    Var Check_ESP8266
+    Var Check_RP2040
+    Var Check_Maixduino
+    Var Check_SparkFun
 
-; ── Board selection page (shown before Welcome) ───────────────────────────────
-Function BoardSelectionPage
-    ; When the installer elevates (UAC), it relaunches as an "inner" instance that re-runs
-    ; every page. Skip this page there — it was already shown in the outer (UI) instance and
-    ; the choice is persisted to the registry. Without this guard the user sees it TWICE.
-    ${If} ${UAC_IsInnerInstance}
-        Abort
-    ${EndIf}
+    Var State_Arduino
+    Var State_ESP32
+    Var State_ESP8266
+    Var State_RP2040
+    Var State_Maixduino
+    Var State_SparkFun
 
-    nsDialogs::Create 1018
-    Pop $BoardDialog
-    ${If} $BoardDialog == error
-        Abort
-    ${EndIf}
+    Function BoardSelectionPage
+        ; When the installer elevates (UAC), it relaunches as an "inner" instance that re-runs
+        ; every page. Skip this page there — it was already shown in the outer (UI) instance and
+        ; the choice is persisted to the registry. Without this guard the user sees it TWICE.
+        ${If} ${UAC_IsInnerInstance}
+            Abort
+        ${EndIf}
 
-    ${NSD_CreateLabel} 0 0 100% 24u "Select the board families you want to install.$\nYou can install additional boards later from within the application."
-    Pop $0
+        nsDialogs::Create 1018
+        Pop $BoardDialog
+        ${If} $BoardDialog == error
+            Abort
+        ${EndIf}
 
-    ${NSD_CreateLabel} 0 30u 100% 10u "Board Family"
-    Pop $0
+        ${NSD_CreateLabel} 0 0 100% 24u "Select the board families you want to install.$\nYou can install additional boards later from within the application."
+        Pop $0
 
-    ${NSD_CreateCheckbox} 0 42u 100% 14u "Arduino boards  —  Uno, Nano, Leonardo, Mega, UNO R4  (759 MB)"
-    Pop $Check_Arduino
-    ${NSD_Check} $Check_Arduino
+        ${NSD_CreateLabel} 0 30u 100% 10u "Board Family"
+        Pop $0
 
-    ${NSD_CreateCheckbox} 0 58u 100% 14u "ESP32 boards  —  ESP32, ESP32-S3 and all variants  (3,476 MB)"
-    Pop $Check_ESP32
-    ${NSD_Check} $Check_ESP32
+        ${NSD_CreateCheckbox} 0 42u 100% 14u "Arduino boards  —  Uno, Nano, Leonardo, Mega, UNO R4  (759 MB)"
+        Pop $Check_Arduino
+        ${NSD_Check} $Check_Arduino
 
-    ${NSD_CreateCheckbox} 0 74u 100% 14u "ESP8266 boards  —  NodeMCU, D1 Mini and variants  (338 MB)"
-    Pop $Check_ESP8266
+        ${NSD_CreateCheckbox} 0 58u 100% 14u "ESP32 boards  —  ESP32, ESP32-S3 and all variants  (3,476 MB)"
+        Pop $Check_ESP32
+        ${NSD_Check} $Check_ESP32
 
-    ${NSD_CreateCheckbox} 0 90u 100% 14u "Raspberry Pi Pico boards  —  Pico, Pico W, Pico 2, Pico 2W  (1,406 MB)"
-    Pop $Check_RP2040
+        ${NSD_CreateCheckbox} 0 74u 100% 14u "ESP8266 boards  —  NodeMCU, D1 Mini and variants  (338 MB)"
+        Pop $Check_ESP8266
 
-    ${NSD_CreateCheckbox} 0 106u 100% 14u "Maixduino boards  —  Sipeed MaixDock, Maixduino K210  (149 MB)"
-    Pop $Check_Maixduino
+        ${NSD_CreateCheckbox} 0 90u 100% 14u "Raspberry Pi Pico boards  —  Pico, Pico W, Pico 2, Pico 2W  (1,406 MB)"
+        Pop $Check_RP2040
 
-    ${NSD_CreateCheckbox} 0 122u 100% 14u "SparkFun boards  —  SparkFun AVR variants  (4 MB)"
-    Pop $Check_SparkFun
+        ${NSD_CreateCheckbox} 0 106u 100% 14u "Maixduino boards  —  Sipeed MaixDock, Maixduino K210  (149 MB)"
+        Pop $Check_Maixduino
 
-    ${NSD_CreateLabel} 0 142u 100% 20u "Note: Uninstalled boards can be added later without re-running this installer.$\nAll board archives are kept in the installation folder."
-    Pop $0
+        ${NSD_CreateCheckbox} 0 122u 100% 14u "SparkFun boards  —  SparkFun AVR variants  (4 MB)"
+        Pop $Check_SparkFun
 
-    nsDialogs::Show
-FunctionEnd
+        ${NSD_CreateLabel} 0 142u 100% 20u "Note: Uninstalled boards can be added later without re-running this installer.$\nAll board archives are kept in the installation folder."
+        Pop $0
 
-Function LeaveBoardSelectionPage
-    ${NSD_GetState} $Check_Arduino   $State_Arduino
-    ${NSD_GetState} $Check_ESP32     $State_ESP32
-    ${NSD_GetState} $Check_ESP8266   $State_ESP8266
-    ${NSD_GetState} $Check_RP2040    $State_RP2040
-    ${NSD_GetState} $Check_Maixduino $State_Maixduino
-    ${NSD_GetState} $Check_SparkFun  $State_SparkFun
+        nsDialogs::Show
+    FunctionEnd
 
-    ; Persist the selection so the elevated install instance uses the user's ACTUAL choice.
-    ; This page runs only in the outer (UI) instance; the install runs in the elevated inner
-    ; instance, which reads these values back in customInstall. (Same-user UAC elevation
-    ; shares HKCU.) A "Recorded" flag distinguishes "user chose" from "silent/no UI".
-    WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "Arduino"   $State_Arduino
-    WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "ESP32"     $State_ESP32
-    WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "ESP8266"   $State_ESP8266
-    WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "RP2040"    $State_RP2040
-    WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "Maixduino" $State_Maixduino
-    WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "SparkFun"  $State_SparkFun
-    WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "Recorded"  "1"
-FunctionEnd
+    Function LeaveBoardSelectionPage
+        ${NSD_GetState} $Check_Arduino   $State_Arduino
+        ${NSD_GetState} $Check_ESP32     $State_ESP32
+        ${NSD_GetState} $Check_ESP8266   $State_ESP8266
+        ${NSD_GetState} $Check_RP2040    $State_RP2040
+        ${NSD_GetState} $Check_Maixduino $State_Maixduino
+        ${NSD_GetState} $Check_SparkFun  $State_SparkFun
 
-; Register our custom page BEFORE the normal installer pages
-Page custom BoardSelectionPage LeaveBoardSelectionPage "Board Support"
+        ; Persist the selection so the elevated install instance uses the user's ACTUAL choice.
+        ; This page runs only in the outer (UI) instance; the install runs in the elevated inner
+        ; instance, which reads these values back in customInstall. (Same-user UAC elevation
+        ; shares HKCU.) A "Recorded" flag distinguishes "user chose" from "silent/no UI".
+        WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "Arduino"   $State_Arduino
+        WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "ESP32"     $State_ESP32
+        WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "ESP8266"   $State_ESP8266
+        WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "RP2040"    $State_RP2040
+        WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "Maixduino" $State_Maixduino
+        WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "SparkFun"  $State_SparkFun
+        WriteRegStr HKCU "Software\RoboCoders-Studio\Setup" "Recorded"  "1"
+    FunctionEnd
+
+    Page custom BoardSelectionPage LeaveBoardSelectionPage "Board Support"
+
+!macroend
 
 !macro preInit
 
@@ -127,9 +140,16 @@ done:
 !macroend
 
 ; ── Helper: extract one board pack via PowerShell Expand-Archive ─────────────
+; Run it through nsExec (NOT ExecWait). ExecWait launches powershell.exe — a CONSOLE app —
+; and does NOT suppress its console window, so a black terminal flashes/lingers on screen
+; (worst on slow machines and during large packs like ESP32 ≈ 3.4 GB, where the end user
+; sees the board software "unzipping in a terminal"). nsExec::ExecToLog runs the process
+; fully HIDDEN and pipes any output into the installer's detail log — same as the icacls
+; call below. -WindowStyle Hidden alone can't win the race; nsExec removes the window entirely.
 !macro _ExtractPack PkgId PkgName
     DetailPrint "Installing ${PkgName} board support..."
-    ExecWait 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$INSTDIR\board-packs\${PkgId}.zip\" -DestinationPath \"$INSTDIR\tools\Arduino\packages\" -Force"' $0
+    nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$INSTDIR\board-packs\${PkgId}.zip\" -DestinationPath \"$INSTDIR\tools\Arduino\packages\" -Force"'
+    Pop $0
     ${If} $0 != 0
         MessageBox MB_OK|MB_ICONEXCLAMATION \
             "Warning: Failed to install ${PkgName} board support (code $0).$\nYou can install it later from within the application."
@@ -181,6 +201,17 @@ done:
         !insertmacro _ExtractPack "SparkFun" "SparkFun"
     ${EndIf}
 
+    ; Grant the BUILTIN\Users group Modify rights on the Arduino tools folder so that ANY user
+    ; (including a standard, non-admin user) can install additional boards from inside the app
+    ; later WITHOUT an admin prompt. arduino-cli uses this single folder as its data dir (cores)
+    ; and the in-app Board Manager extracts board packs here. The installer runs elevated, so this
+    ; is the one place we can safely open up that specific folder. *S-1-5-32-545 is the well-known
+    ; SID for the Users group (locale-independent); (OI)(CI) makes new files/dirs inherit the right.
+    CreateDirectory "$INSTDIR\tools\Arduino\packages"
+    DetailPrint "Configuring board folder permissions..."
+    nsExec::ExecToLog 'icacls "$INSTDIR\tools\Arduino" /grant "*S-1-5-32-545:(OI)(CI)M" /T /C'
+    Pop $0
+
     ; Clean up the temporary selection key now that it's been applied.
     DeleteRegKey HKCU "Software\RoboCoders-Studio\Setup"
 
@@ -194,9 +225,27 @@ done:
 
     DeleteRegKey HKLM "${INSTALL_REGISTRY_KEY}"
     DeleteRegKey HKCU "${INSTALL_REGISTRY_KEY}"
+    ; Also drop the temporary board-selection key in case a prior install left it behind.
+    DeleteRegKey HKCU "Software\RoboCoders-Studio\Setup"
 
     ${If} ${RunningX64}
         SetRegView LastUsed
     ${EndIf}
+
+    ; ── Full cleanup so the app never appears "still installed" ────────────────────
+    ; Make sure the app isn't running, otherwise its open files are LOCKED and can't be deleted —
+    ; which leaves a partial install behind and the uninstall entry lingering. (electron-builder
+    ; also checks, but this is a hard guarantee.) Non-fatal if the process isn't found.
+    nsExec::Exec 'taskkill /f /im "${PRODUCT_FILENAME}.exe"'
+    Pop $0
+    Sleep 800
+
+    ; Remove EVERYTHING remaining in the install folder, INCLUDING files created at RUNTIME that are
+    ; NOT in the uninstaller's manifest: board packs extracted by the in-app Board Manager, Arduino
+    ; libraries compiled by device extensions, and the user-writable tools\Arduino cache. The default
+    ; uninstaller deletes only the files it installed, so those runtime files would remain — leaving a
+    ; non-empty install folder that looks "not uninstalled" and blocks the final RMDir/entry cleanup.
+    ; The uninstaller runs from a TEMP copy of itself, so removing $INSTDIR here is safe.
+    RMDir /r "$INSTDIR"
 
 !macroend
