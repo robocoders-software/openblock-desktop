@@ -1,67 +1,132 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Algorithm 1 — Generate Machine ID (single deterministic source)
+// Algorithm 1 — Generate Machine ID (single deterministic source per platform)
 //
-//   guid         = HKLM\SOFTWARE\Microsoft\Cryptography  MachineGuid
-//   machine_hash = SHA256(guid)                 (full 64-char hex)
-//   machine_id   = First16(machine_hash)        (shown to the installer)
+//   fingerprint  = per-platform stable machine identifier (see below)
+//   machine_hash = SHA256(fingerprint)             (full 64-char hex)
+//   machine_id   = First16(machine_hash)           (shown to the installer)
 //
-// ONE source, no fallback ladder. The Windows MachineGuid is a GUID written
-// once at OS install: present on every Windows PC, unique per installation,
-// readable by a standard (non-admin) user, and — unlike CIM/PowerShell hardware
-// queries — reliable on locked-down school PCs. Read via reg.exe so it does not
-// depend on PowerShell being enabled.
+// ONE source per platform, no fallback ladder. Each source is an identifier that
+// the OS writes once at install time: present on every machine, unique per
+// installation, and readable by a standard (non-admin) user — unlike CIM/
+// hardware queries which are unreliable on locked-down machines.
 //
-// If the MachineGuid cannot be read, we THROW rather than fall back to a shared
-// constant — a missing MachineGuid is an abnormal system, and silently issuing
+//   Windows  HKLM\SOFTWARE\Microsoft\Cryptography  MachineGuid   (via reg.exe,
+//            so it does not depend on PowerShell being enabled)
+//   macOS    IOPlatformUUID from IOPlatformExpertDevice          (via ioreg)
+//   Linux    /etc/machine-id  (falls back to /var/lib/dbus/machine-id)
+//
+// If the source cannot be read, we THROW rather than fall back to a shared
+// constant — a missing identifier is an abnormal system, and silently issuing
 // the same Machine ID to many PCs would let one key activate them all.
 //
-// Trade-off (by design): MachineGuid is tied to the OS installation, so an
-// OS reinstall / re-image changes it and that PC must be re-activated. Image
-// labs with `sysprep /generalize` so each clone gets its own MachineGuid.
+// Trade-off (by design): each source is tied to the OS installation, so an
+// OS reinstall / re-image changes it and that machine must be re-activated.
+// Image labs with `sysprep /generalize` (Windows) or clear /etc/machine-id
+// before imaging (Linux) so each clone gets its own identifier.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const crypto = require('crypto');
+const fs = require('fs');
 const { execFileSync } = require('child_process');
 
 const REG_PATH = 'HKLM\\SOFTWARE\\Microsoft\\Cryptography';
 const REG_VALUE = 'MachineGuid';
 
-// ── The single source: Windows MachineGuid ───────────────────────────────────
+// ── The single source, per platform ──────────────────────────────────────────
 
 /**
- * Read the Windows MachineGuid from the registry via reg.exe.
+ * Windows: read the MachineGuid from the registry via reg.exe.
  * `/reg:64` forces the 64-bit view so a 32-bit process reads the same value.
- * @returns {string} the lowercase GUID, e.g. "f1d2c3b4-...-abc123456789"
- * @throws if the value cannot be read (no silent fallback by design)
+ * @returns {string} lowercase GUID, e.g. "f1d2c3b4-...-abc123456789"
  */
-function readMachineGuid() {
-  let out;
-  try {
-    out = execFileSync(
-      'reg',
-      ['query', REG_PATH, '/v', REG_VALUE, '/reg:64'],
-      { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-  } catch (e) {
-    throw new Error(
-      'Could not read Windows MachineGuid (reg.exe failed). This environment is not supported. '
-      + (e && e.message ? e.message : '')
-    );
-  }
+function readWindowsGuid() {
+  const out = execFileSync(
+    'reg',
+    ['query', REG_PATH, '/v', REG_VALUE, '/reg:64'],
+    { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
+  );
   // Output line:  "    MachineGuid    REG_SZ    <guid>"
   const m = out.match(/MachineGuid\s+REG_SZ\s+([0-9A-Fa-f-]+)/);
   const guid = m && m[1] ? m[1].trim().toLowerCase() : '';
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(guid)) {
-    throw new Error('Windows MachineGuid is missing or malformed — environment not supported.');
+    throw new Error('Windows MachineGuid is missing or malformed.');
   }
   return guid;
 }
 
-// ── Pure logic (testable with a fixed guid) ──────────────────────────────────
+/**
+ * macOS: read the IOPlatformUUID from the I/O Registry via ioreg.
+ * @returns {string} lowercase UUID
+ */
+function readMacUuid() {
+  const out = execFileSync(
+    'ioreg',
+    ['-rd1', '-c', 'IOPlatformExpertDevice'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+  );
+  // Output line:  "    "IOPlatformUUID" = "F1D2C3B4-...-ABC123456789""
+  const m = out.match(/"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"/);
+  const uuid = m && m[1] ? m[1].trim().toLowerCase() : '';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(uuid)) {
+    throw new Error('macOS IOPlatformUUID is missing or malformed.');
+  }
+  return uuid;
+}
 
-/** SHA256(guid) as lowercase hex — the full machine_hash. */
-function hashFingerprint(guid) {
-  return crypto.createHash('sha256').update(String(guid), 'utf8').digest('hex');
+/**
+ * Linux: read /etc/machine-id (systemd), falling back to the D-Bus machine-id.
+ * @returns {string} lowercase 32-char hex string
+ */
+function readLinuxMachineId() {
+  const paths = ['/etc/machine-id', '/var/lib/dbus/machine-id'];
+  let raw = '';
+  for (const p of paths) {
+    try {
+      raw = fs.readFileSync(p, 'utf8').trim().toLowerCase();
+      if (raw) break;
+    } catch {
+      // try the next location
+    }
+  }
+  if (!/^[0-9a-f]{32}$/.test(raw)) {
+    throw new Error('Linux machine-id is missing or malformed.');
+  }
+  return raw;
+}
+
+/**
+ * Read this machine's stable fingerprint using the platform's single source.
+ * @returns {string} a lowercase, stable-per-install identifier
+ * @throws if the value cannot be read (no silent fallback by design)
+ */
+function readMachineFingerprint() {
+  try {
+    switch (process.platform) {
+    case 'win32':
+      return readWindowsGuid();
+    case 'darwin':
+      return readMacUuid();
+    case 'linux':
+      return readLinuxMachineId();
+    default:
+      throw new Error(`Unsupported platform: ${process.platform}`);
+    }
+  } catch (e) {
+    throw new Error(
+      'Could not read a stable machine identifier for this environment. '
+      + (e && e.message ? e.message : '')
+    );
+  }
+}
+
+// Backward-compatible alias — some callers/tests referenced readMachineGuid.
+const readMachineGuid = readMachineFingerprint;
+
+// ── Pure logic (testable with a fixed fingerprint) ───────────────────────────
+
+/** SHA256(fingerprint) as lowercase hex — the full machine_hash. */
+function hashFingerprint(fingerprint) {
+  return crypto.createHash('sha256').update(String(fingerprint), 'utf8').digest('hex');
 }
 
 /** First 16 chars of the machine hash, uppercased — the displayed Machine ID. */
@@ -79,20 +144,21 @@ let _cached = null;
  */
 function getMachineIdentity() {
   if (_cached) return _cached;
-  const guid = readMachineGuid();
-  const machineHash = hashFingerprint(guid);
+  const fingerprint = readMachineFingerprint();
+  const machineHash = hashFingerprint(fingerprint);
   const machineId = machineIdFromHash(machineHash);
   _cached = {
-    machineGuid: guid,
-    fingerprint: guid,          // the single source string
+    machineGuid: fingerprint,        // kept for backward compatibility / diagnostics
+    fingerprint,                     // the single source string
     machineHash,
     machineId,
-    hardware: { machineGuid: guid }, // kept for diagnostics / backward compatibility
+    hardware: { machineGuid: fingerprint },
   };
   return _cached;
 }
 
 module.exports = {
+  readMachineFingerprint,
   readMachineGuid,
   hashFingerprint,
   machineIdFromHash,

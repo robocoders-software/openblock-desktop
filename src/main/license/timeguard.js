@@ -36,9 +36,27 @@ const REG_VAL = 'LastRun';
 
 // ── candidate file paths (skip any env var that isn't set) ───────────────────
 function fileLocations() {
-  return [process.env.ProgramData, process.env.APPDATA, process.env.LOCALAPPDATA]
-    .filter(Boolean)
-    .map((dir) => path.join(dir, NS, FILE));
+  const locations = [];
+  if (process.platform === 'win32') {
+    locations.push(
+      ...[process.env.ProgramData, process.env.APPDATA, process.env.LOCALAPPDATA]
+        .filter(Boolean)
+        .map((dir) => path.join(dir, NS, FILE))
+    );
+  } else if (process.platform === 'darwin') {
+    const home = process.env.HOME;
+    if (home) {
+      locations.push(path.join(home, 'Library', 'Application Support', NS, FILE));
+      locations.push(path.join(home, 'Library', 'Caches', NS, FILE));
+    }
+  } else if (process.platform === 'linux') {
+    const home = process.env.HOME;
+    const xdgData = process.env.XDG_DATA_HOME
+      || (home ? path.join(home, '.local', 'share') : null);
+    if (xdgData) locations.push(path.join(xdgData, NS, FILE));
+    if (home) locations.push(path.join(home, '.config', NS, FILE));
+  }
+  return locations;
 }
 
 // ── tamper-proof packing:  "<iso>|<hmac16>" ──────────────────────────────────

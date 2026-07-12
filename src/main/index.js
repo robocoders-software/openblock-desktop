@@ -1703,25 +1703,42 @@ app.on('ready', async () => {
     });
 
     if (isDevelopment) {
-        import('electron-devtools-installer').then(importedModule => {
+        import('electron-devtools-installer').then(async importedModule => {
             const {default: installExtension, ...devToolsExtensions} = importedModule;
             const extensionsToInstall = [
                 devToolsExtensions.REACT_DEVELOPER_TOOLS,
                 devToolsExtensions.REDUX_DEVTOOLS
             ];
+            const extensionsDir = path.join(app.getPath('userData'), 'extensions');
+            const installOptions = {
+                forceDownload: true,
+                loadExtensionOptions: {allowFileAccess: true}
+            };
+            const clearExtensionCache = extensionId => {
+                fs.removeSync(path.join(extensionsDir, extensionId));
+                fs.removeSync(path.join(extensionsDir, `${extensionId}.crx`));
+            };
             for (const extension of extensionsToInstall) {
-                // WARNING: depending on a lot of things including the version of Electron `installExtension` might
-                // return a promise that never resolves, especially if the extension is already installed.
                 try {
-                    installExtension(extension).then(
-                        extensionName => log(`Installed dev extension: ${extensionName}`),
-                        errorMessage => log.error(`Error installing dev extension: ${errorMessage}`)
-                    ).catch(err => log.error(`Dev extension install failed: ${err}`));
+                    const extensionName = await installExtension(extension, installOptions);
+                    log(`Installed dev extension: ${extensionName}`);
                 } catch (err) {
-                    log.error(`Dev extension install threw: ${err}`);
+                    const message = err && err.message ? err.message : String(err);
+                    if (message.includes('Cr24') && extension.id) {
+                        // Stale/corrupt CRX cache — wipe and retry once.
+                        try {
+                            clearExtensionCache(extension.id);
+                            const extensionName = await installExtension(extension, installOptions);
+                            log(`Installed dev extension: ${extensionName}`);
+                        } catch (retryErr) {
+                            log.warn(`Dev extension install skipped: ${retryErr && retryErr.message ? retryErr.message : retryErr}`);
+                        }
+                    } else {
+                        log.warn(`Dev extension install skipped: ${message}`);
+                    }
                 }
             }
-        }).catch(err => log.error(`Failed to load electron-devtools-installer: ${err}`));
+        }).catch(err => log.warn(`Dev extensions unavailable: ${err && err.message ? err.message : err}`));
     }
 
     ipcMain.on('clearCache', () => {
