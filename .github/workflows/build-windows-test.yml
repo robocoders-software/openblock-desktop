@@ -1,0 +1,146 @@
+name: Build Windows test installer
+
+# Manual only — this is a multi-GB, long-running build for ad-hoc testing,
+# not something that should fire on every push.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch/ref of this repo (openblock-desktop) to build'
+        required: true
+        default: 'test/today-fixes'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    # electron-builder + large downloads routinely need well over the 60-minute default.
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout openblock-desktop
+        uses: actions/checkout@v4
+        with:
+          path: openblock-desktop
+          ref: ${{ inputs.ref }}
+
+      - name: Checkout openblock-gui
+        uses: actions/checkout@v4
+        with:
+          repository: robocoders-software/openblock-gui
+          path: openblock-gui
+
+      - name: Checkout openblock-vm
+        uses: actions/checkout@v4
+        with:
+          repository: robocoders-software/openblock-vm
+          path: openblock-vm
+
+      - name: Checkout openblock-blocks
+        uses: actions/checkout@v4
+        with:
+          repository: robocoders-software/openblock-blocks
+          path: openblock-blocks
+
+      - name: Checkout openblock-l10n
+        uses: actions/checkout@v4
+        with:
+          repository: robocoders-software/openblock-l10n
+          path: openblock-l10n
+
+      - name: Checkout openblock-ml-studio
+        uses: actions/checkout@v4
+        with:
+          repository: robocoders-software/openblock-ml-studio
+          path: openblock-ml-studio
+
+      # openblock-link is pinned to a stale npm-published prerelease in openblock-desktop's
+      # package.json (the published version predates today's bug fixes). Check out the real
+      # source here and overlay it into node_modules after install, instead of relying on npm.
+      - name: Checkout openblock-link (fixed source — overlaid after npm install)
+        uses: actions/checkout@v4
+        with:
+          repository: robocoders-software/openblock-link
+          path: openblock-link-src
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install openblock-vm dependencies
+        working-directory: openblock-vm
+        run: npm install --legacy-peer-deps
+
+      - name: Install openblock-gui dependencies
+        working-directory: openblock-gui
+        run: npm install --legacy-peer-deps
+
+      - name: Install openblock-ml-studio dependencies
+        working-directory: openblock-ml-studio
+        run: npm install --legacy-peer-deps
+
+      - name: Install openblock-blocks dependencies
+        working-directory: openblock-blocks
+        run: npm install --legacy-peer-deps
+
+      # Generates openblock-l10n/locales/*.js, which openblock-gui's reducers/locales.js
+      # imports directly — the package is useless to other repos without this build step.
+      - name: Install openblock-l10n dependencies and build locale bundles
+        working-directory: openblock-l10n
+        run: |
+          npm install --legacy-peer-deps
+          npm run build
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+
+      - name: Install openblock-link (fixed source) dependencies
+        working-directory: openblock-link-src
+        run: npm install --legacy-peer-deps
+
+      - name: Install openblock-desktop dependencies
+        working-directory: openblock-desktop
+        run: npm install
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+
+      # Replace the stale npm-published openblock-link with today's actual fixed source,
+      # so the build (and the installer it produces) includes this session's bug fixes.
+      - name: Overlay fixed openblock-link into node_modules
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force openblock-desktop/node_modules/openblock-link
+          Copy-Item -Recurse openblock-link-src openblock-desktop/node_modules/openblock-link
+
+      - name: Compile
+        working-directory: openblock-desktop
+        run: npm run compile
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+
+      # Downloads drivers, external-resources, firmwares, the Arduino/Python toolchain, and ML
+      # models, then zips each board family's toolchain into board-packs/ for the installer's
+      # board-selection page. All of this is designed to run on a real Windows host — exactly
+      # what this runner is.
+      - name: Fetch build resources (drivers, firmwares, tools, extensions, ML models, board-packs)
+        working-directory: openblock-desktop
+        run: npm run fetch:all
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+
+      # No code-signing certificate is configured — this produces an UNSIGNED installer.
+      # Windows SmartScreen will warn on first run; that's expected for an ad-hoc test build.
+      - name: Build installer (unsigned)
+        working-directory: openblock-desktop
+        run: npm run doBuild -- --mode=dist
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoboCoders-Studio-Desktop-Windows-installer
+          path: |
+            openblock-desktop/dist/*.exe
+          if-no-files-found: error
+          retention-days: 14
