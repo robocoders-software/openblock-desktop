@@ -121,7 +121,7 @@ jobs:
       - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RoboCoders-Studio-Windows-x64-${{ env.BUILD_BRANCH }}
+          name: RoboCoders-Studio-Windows-x64-${{ github.run_id }}
           path: openblock-desktop/dist/win-unpacked/**
           if-no-files-found: error
           retention-days: 14
