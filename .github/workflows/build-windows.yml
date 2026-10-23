@@ -99,19 +99,26 @@ jobs:
         run: Set-MpPreference -DisableRealtimeMonitoring $true
         continue-on-error: true
 
-      - name: Build Windows installer
+      # --dir mode skips NSIS: the bundled makensis.exe is 32-bit and can't mmap a
+      # single embedded payload once board-pack tools push it past ~2GB. --dir just
+      # produces the unpacked app folder, which upload-artifact zips for distribution.
+      - name: Build Windows app (unpacked)
         env:
           NODE_ENV: production
           NODE_OPTIONS: --max_old_space_size=8192
           CSC_IDENTITY_AUTO_DISCOVERY: false
           USE_HARD_LINKS: false
-        run: npm run dist
+        run: |
+          npm run clean
+          npm run compile
+          npm run fetch:all
+          node ./scripts/electron-builder-wrapper.js --mode=dir
 
-      - name: Upload Windows installer artifact
+      - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
         with:
           name: RoboCoders-Studio-Windows-x64-${{ env.BUILD_BRANCH }}
-          path: openblock-desktop/dist/RoboCoders-studio-Desktop_v*_win_x64.exe
+          path: openblock-desktop/dist/win-unpacked/**
           if-no-files-found: error
           retention-days: 14
 
