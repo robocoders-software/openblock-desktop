@@ -112,7 +112,7 @@ jobs:
           npm run clean
           npm run compile
           npm run fetch:all
-          node ./scripts/electron-builder-wrapper.js --mode=dir
+          npm run doBuild -- --mode=dir
 
       - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
