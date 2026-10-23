@@ -21,10 +21,16 @@
 // Locations (Windows): %ProgramData%, %APPDATA%, %LOCALAPPDATA%, and the
 // registry (HKCU). At least the AppData + registry ones are always writable by
 // a normal user; ProgramData adds a machine-wide copy when permitted.
+//
+// Locations (macOS): ~/Library/Application Support (per-user, always writable)
+// and /Library/Application Support (machine-wide, best-effort — only written
+// when permitted, mirroring ProgramData's role on Windows). The registry is
+// Windows-only; regRead/regWrite already no-op elsewhere on failure.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const https = require('https');
 const { execFileSync } = require('child_process');
@@ -34,11 +40,12 @@ const FILE = '.lrt';             // "last run time" marker file
 const REG_KEY = `HKCU\\Software\\${NS}`;
 const REG_VAL = 'LastRun';
 
-// ── candidate file paths (skip any env var that isn't set) ───────────────────
+// ── candidate file paths (skip any env var/path that isn't available) ────────
 function fileLocations() {
-  return [process.env.ProgramData, process.env.APPDATA, process.env.LOCALAPPDATA]
-    .filter(Boolean)
-    .map((dir) => path.join(dir, NS, FILE));
+  const dirs = process.platform === 'darwin'
+    ? [path.join(os.homedir(), 'Library', 'Application Support'), '/Library/Application Support']
+    : [process.env.ProgramData, process.env.APPDATA, process.env.LOCALAPPDATA];
+  return dirs.filter(Boolean).map((dir) => path.join(dir, NS, FILE));
 }
 
 // ── tamper-proof packing:  "<iso>|<hmac16>" ──────────────────────────────────

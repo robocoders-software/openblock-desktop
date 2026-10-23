@@ -1,6 +1,7 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useCallback} from 'react';
 import PropTypes from 'prop-types';
 import {ipcRenderer} from 'electron';
+import showAppDialog from 'openblock-gui/src/lib/app-dialog-service.js';
 import {productName} from '../../package.json';
 
 import logo from '../icon/logo-OpenBlockcc.svg';
@@ -33,6 +34,7 @@ Row.propTypes = {
 const LicenseDetails = () => {
     const [info, setInfo] = useState(null);
     const [loaded, setLoaded] = useState(false);
+    const [removing, setRemoving] = useState(false);
 
     useEffect(() => {
         ipcRenderer.invoke('license:get-details')
@@ -40,6 +42,31 @@ const LicenseDetails = () => {
             .catch(() => setInfo({valid: false}))
             .finally(() => setLoaded(true));
     }, []);
+
+    const handleClose = useCallback(() => window.close(), []);
+
+    const handleRemove = useCallback(async () => {
+        if (removing) return;
+        const idx = await showAppDialog({
+            type: 'warning',
+            title: 'Remove License',
+            message: `Remove this license? You will need to activate again to use ${productName}.`,
+            buttons: ['Remove', 'Cancel'],
+            defaultId: 1
+        });
+        if (idx !== 0) return; // 'Cancel'
+        setRemoving(true);
+        const r = await ipcRenderer.invoke('license:remove');
+        if (!r || !r.ok) {
+            setRemoving(false);
+            await showAppDialog({
+                type: 'error',
+                title: 'Remove License Failed',
+                message: (r && r.reason) || 'Could not remove the license.'
+            });
+        }
+        // on success the main process relaunches the app shortly after
+    }, [removing]);
 
     const active = info && info.valid;
     const expSoon = active && info.daysRemaining <= 14;
@@ -85,6 +112,22 @@ const LicenseDetails = () => {
 
     return (
         <div className={styles.wrap}>
+            <div className={styles.actions}>
+                <button
+                    className={styles.removeButton}
+                    disabled={!active || removing}
+                    onClick={handleRemove}
+                >
+                    {removing ? 'Removing…' : 'Remove License'}
+                </button>
+                <button
+                    className={styles.closeButton}
+                    onClick={handleClose}
+                >
+                    {'Close'}
+                </button>
+            </div>
+
             <div className={styles.head}>
                 <img
                     className={styles.logo}

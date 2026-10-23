@@ -11,7 +11,7 @@ import DesktopLink from './OpenblockDesktopLink.js';
 import MacOSMenu from './MacOSMenu';
 import log from '../common/log.js';
 import {productName, version} from '../../package.json';
-import './board-manager.js';
+import {attachBoardManagerIpcMain} from './board-manager.js';
 import {createLicenseManager} from './license/license-manager';
 
 import {v4 as uuidv4} from 'uuid';
@@ -233,6 +233,19 @@ ipcMain.handle('license:activate', (event, rawKey) => {
     return r;
 });
 
+/* Remove the stored license (from the in-app "License Details" view), then relaunch
+   so the app comes back up on the activation screen — same relaunch pattern as
+   license:activate above. */
+ipcMain.handle('license:remove', () => {
+    try {
+        licenseManager.deleteLicense();
+    } catch (e) {
+        return {ok: false, reason: (e && e.message) || 'Could not remove the license.'};
+    }
+    setTimeout(() => { app.relaunch(); app.exit(0); }, 700);
+    return {ok: true};
+});
+
 /* Safe, read-only license summary for the in-app "License Details" view.
    Returns ONLY non-sensitive fields — never the activation key, shared secret,
    or machine hash. */
@@ -430,6 +443,57 @@ const devToolKey = ((process.platform === 'darwin') ?
 
 // global window references prevent them from being garbage-collected
 const _windows = {};
+
+/* ── macOS file-association open (double-clicking a .rc/.rcml file) ──────────────
+ * Windows/Linux pass the file path as a plain CLI argument, which argv.js + the
+ * initialProjectDataPromise IIFE below already handle correctly. macOS instead
+ * delivers it via this 'open-file' app event — not argv — so without a handler here
+ * double-clicking a project file on macOS does nothing the FIRST time it reaches an
+ * already-running instance, and is silently dropped every time after that (closing
+ * the main window does not quit the app — the hidden About/License/Privacy windows
+ * keep the process alive, exactly the scenario this event fires into).
+ *
+ * Must be registered here, synchronously, before any await/event-loop yield — macOS
+ * fires 'open-file' for a cold (double-click) launch BEFORE 'ready', and Electron
+ * only queues/delivers it to listeners that are already attached.
+ */
+const _pendingOpenFilePaths = [];
+app.on('open-file', (event, filePath) => {
+    event.preventDefault();
+    if (!_windows.main || _windows.main.isDestroyed()) {
+        // Cold launch, or 'ready' hasn't created the main window yet — queue it for
+        // initialProjectDataPromise (below) to pick up once the app is ready.
+        _pendingOpenFilePaths.push(filePath);
+        return;
+    }
+    // Already running with a window open. Re-using that window's in-memory project
+    // state is what silently corrupted re-opened projects before this fix — the
+    // renderer only ever reads its "initial project" once, at startup, so a second
+    // open-file here would show nothing new while _currentProjectFilePath kept
+    // pointing at the real file; the next save (manual or on close) then overwrote
+    // it with whatever blank/unrelated state the window was showing. Relaunching
+    // into the file sidesteps all of that by reusing the exact same startup path
+    // that already works correctly for a fresh launch.
+    // Wait for THIS window specifically (not the app-level 'window-all-closed' — the
+    // hidden About/License/Privacy windows are kept alive for the app's whole life, so
+    // that event never fires). If the user cancels an unsaved-changes prompt, close()
+    // never completes and 'closed' never fires — we correctly just leave them be.
+    _windows.main.once('closed', () => {
+        // Preserve the original launch's args (dev mode's `dist/main/main.js --bail …`,
+        // or a packaged build's own flags like a custom --user-data-dir) and swap in the
+        // newly-opened file for any previous one — argv.js/initialProjectDataPromise
+        // already use the LAST positional argument, so just appending (without dropping
+        // the old one) would still behave correctly, but would also let argv grow by one
+        // stale .rc/.rcml path every time the user re-opens a file in the same running
+        // session. Replacing argv outright (an earlier version of this fix) broke dev
+        // mode, where the Electron binary needs 'dist/main/main.js' in argv to know what
+        // to run at all.
+        const preservedArgs = process.argv.slice(1).filter(a => !/\.(rc|rcml)$/i.test(a));
+        app.relaunch({args: preservedArgs.concat([filePath])});
+        app.exit(0);
+    });
+    _windows.main.close(); // goes through the existing save-prompt-aware close flow
+});
 
 // enable connecting to Scratch Link even if we DNS / Internet access is not available
 // this must happen BEFORE the app ready event!
@@ -1132,6 +1196,7 @@ app.on('ready', async () => {
     });
 
     attachTelemetryIpcMain();
+    attachBoardManagerIpcMain();
 
     /* ══════════════════════════════════════════════════════════════
        Device permission IPC handlers
@@ -1808,7 +1873,8 @@ app.on('ready', async () => {
                 // initial home screen nothing answers — so if no handler ACKs within 700ms, just
                 // close (there's no project to save).
                 setTimeout(() => {
-                    if (_windows.main && !_windows.main._closeAcked && !_windows.main._forceClose) {
+                    if (_windows.main && !_windows.main.isDestroyed() &&
+                        !_windows.main._closeAcked && !_windows.main._forceClose) {
                         _windows.main._forceClose = true;
                         _windows.main.destroy();
                     }
@@ -1822,7 +1888,7 @@ app.on('ready', async () => {
         // Renderer says it's OK to close (saved, or user chose "Don't Save"). destroy() skips the
         // close handler + beforeunload, so there's no second prompt.
         ipcMain.on('app-confirm-close', () => {
-            if (_windows.main) {
+            if (_windows.main && !_windows.main.isDestroyed()) {
                 _windows.main._forceClose = true;
                 _windows.main.destroy();
             }
@@ -1856,12 +1922,12 @@ app.on('ready', async () => {
         // appeared in dev, where the webpack dev server made the renderer slow to load.
         let mainRevealed = false;
         const revealMain = () => {
-            if (mainRevealed || !_windows.main) return;
+            if (mainRevealed || !_windows.main || _windows.main.isDestroyed()) return;
             mainRevealed = true;
             _windows.main.maximize();
             _windows.main.show();
             if (_windows.loading) {
-                _windows.loading.close();
+                if (!_windows.loading.isDestroyed()) _windows.loading.close();
                 delete _windows.loading;
             }
         };
@@ -1876,14 +1942,20 @@ app.on('ready', async () => {
 
 // start loading initial project data before the GUI needs it so the load seems faster
 const initialProjectDataPromise = (async () => {
-    if (argv._.length === 0) {
-        // no command line argument means no initial project data
+    // Wait for 'ready' so that a macOS cold launch via double-click — where 'open-file'
+    // fires before 'ready' and queues into _pendingOpenFilePaths above — has already
+    // been captured before we decide there's nothing to open.
+    await app.whenReady();
+    const openFilePath = _pendingOpenFilePaths.length > 0 ?
+        _pendingOpenFilePaths[_pendingOpenFilePaths.length - 1] : null;
+    if (!openFilePath && argv._.length === 0) {
+        // no command line argument and no macOS open-file means no initial project data
         return;
     }
-    if (argv._.length > 1) {
+    if (!openFilePath && argv._.length > 1) {
         log.warn(`Expected 1 command line argument but received ${argv._.length}.`);
     }
-    const projectPath = argv._[argv._.length - 1];
+    const projectPath = openFilePath || argv._[argv._.length - 1];
     /* Seed file trackers so Save and ml-get-loaded-data work on CLI-opened files */
     _lastOpenedFilePath    = projectPath;
     _currentProjectFilePath = projectPath;

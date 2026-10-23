@@ -3,7 +3,7 @@ import path from 'path';
 import os from 'os';
 import {spawn} from 'child_process';
 import yauzl from 'yauzl';
-import {ipcMain, app} from 'electron';
+import {app} from 'electron';
 
 const getInstallDir = () => {
     if (app.isPackaged) {
@@ -13,12 +13,16 @@ const getInstallDir = () => {
 };
 
 const boardPacksDir = () => path.join(getInstallDir(), 'board-packs');
-const packagesDir  = () => path.join(getInstallDir(), 'tools', 'Arduino', 'packages');
+const packagesDir = () => path.join(getInstallDir(), 'tools', 'Arduino', 'packages');
 
 const readManifest = () => {
     const mf = path.join(boardPacksDir(), 'manifest.json');
     if (!fs.existsSync(mf)) return {};
-    try { return JSON.parse(fs.readFileSync(mf, 'utf-8')); } catch (_) { return {}; }
+    try {
+        return JSON.parse(fs.readFileSync(mf, 'utf-8'));
+    } catch (_) {
+        return {};
+    }
 };
 
 /*
@@ -94,7 +98,9 @@ const extractZip = (zipPath, destDir, {onProgress, isCancelled}) =>
                 if (/[/\\]$/.test(entry.fileName)) {
                     /* Directory entry */
                     fs.ensureDir(destFull)
-                        .then(() => { done++; onProgress(done, total); zipfile.readEntry(); })
+                        .then(() => {
+                            done++; onProgress(done, total); zipfile.readEntry();
+                        })
                         .catch(reject);
                 } else {
                     /* File entry — ensure parent directory exists first */
@@ -109,7 +115,9 @@ const extractZip = (zipPath, destDir, {onProgress, isCancelled}) =>
                                 readStream.pipe(out);
                             });
                         }))
-                        .then(() => { done++; onProgress(done, total); zipfile.readEntry(); })
+                        .then(() => {
+                            done++; onProgress(done, total); zipfile.readEntry();
+                        })
                         .catch(reject);
                 }
             });
@@ -159,7 +167,9 @@ const elevatedExtract = (zipPath, destDir, pkgId, rawBytes, {send}) =>
         const ps1 = path.join(os.tmpdir(), `rc-board-${pkgId}-${Date.now()}.ps1`);
         try {
             fs.writeFileSync(ps1, script, 'utf8');
-        } catch (e) { return reject(e); }
+        } catch (e) {
+            return reject(e);
+        }
 
         // Outer (unelevated) PowerShell elevates the extractor and WAITS for it, then
         // surfaces its exit code. A thrown Start-Process (UAC declined) maps to 1223.
@@ -181,11 +191,17 @@ const elevatedExtract = (zipPath, destDir, pkgId, rawBytes, {send}) =>
         }, 600);
 
         let stderr = '';
-        child.stderr.on('data', d => { stderr += d.toString(); });
+        child.stderr.on('data', d => {
+            stderr += d.toString();
+        });
 
-        const cleanup = () => { clearInterval(poll); fs.remove(ps1).catch(() => {}); };
+        const cleanup = () => {
+            clearInterval(poll); fs.remove(ps1).catch(() => {});
+        };
 
-        child.on('error', err => { cleanup(); reject(err); });
+        child.on('error', err => {
+            cleanup(); reject(err);
+        });
         child.on('close', code => {
             cleanup();
             if (code === 0 && isInstalled(pkgId)) return resolve();
@@ -200,128 +216,139 @@ const elevatedExtract = (zipPath, destDir, pkgId, rawBytes, {send}) =>
         });
     });
 
-/* ── IPC: board-manager:list ─────────────────────────────────────────────── */
-ipcMain.handle('board-manager:list', () => {
-    const manifest = readManifest();
-    return Object.entries(manifest).map(([pkgId, info]) => ({
-        pkgId,
-        name:           info.name,
-        description:    info.description,
-        deviceIds:      info.deviceIds || [],
-        rawBytes:       info.rawBytes || 0,
-        zipBytes:       info.zipBytes || 0,
-        zipFile:        info.zipFile,
-        installed:      isInstalled(pkgId),
-        installing:     _active.has(pkgId),
-        installedBytes: isInstalled(pkgId)
-            ? getDirSizeBytes(path.join(packagesDir(), pkgId)) : 0
-    }));
-});
+/*
+ * Registering ipcMain handlers at module-load time (this file is imported before
+ * app 'ready') can run before Electron's ipcMain is populated when bundled —
+ * require it lazily and register from index.js's 'ready' handler instead.
+ */
+export function attachBoardManagerIpcMain () {
+    const {ipcMain} = require('electron');
 
-/* ── IPC: board-manager:install ──────────────────────────────────────────── */
-ipcMain.handle('board-manager:install', async (event, pkgId) => {
-    const manifest = readManifest();
-    const info = manifest[pkgId];
-    if (!info) throw new Error(`Unknown board package: ${pkgId}`);
+    /* ── IPC: board-manager:list ─────────────────────────────────────────── */
+    ipcMain.handle('board-manager:list', () => {
+        const manifest = readManifest();
+        return Object.entries(manifest).map(([pkgId, info]) => ({
+            pkgId,
+            name: info.name,
+            description: info.description,
+            deviceIds: info.deviceIds || [],
+            rawBytes: info.rawBytes || 0,
+            zipBytes: info.zipBytes || 0,
+            zipFile: info.zipFile,
+            installed: isInstalled(pkgId),
+            installing: _active.has(pkgId),
+            installedBytes: isInstalled(pkgId) ?
+                getDirSizeBytes(path.join(packagesDir(), pkgId)) : 0
+        }));
+    });
 
-    if (_active.has(pkgId)) return {pkgId, installing: true};
+    /* ── IPC: board-manager:install ──────────────────────────────────────── */
+    ipcMain.handle('board-manager:install', async (event, pkgId) => {
+        const manifest = readManifest();
+        const info = manifest[pkgId];
+        if (!info) throw new Error(`Unknown board package: ${pkgId}`);
 
-    const zipPath = path.join(boardPacksDir(), info.zipFile || `${pkgId}.zip`);
-    if (!fs.existsSync(zipPath)) throw new Error(`Board pack not found: ${zipPath}`);
+        if (_active.has(pkgId)) return {pkgId, installing: true};
 
-    /* Check free disk space before starting — rawBytes is the extracted size */
-    if (info.rawBytes && process.platform === 'win32') {
-        try {
-            const driveLetter = path.parse(getInstallDir()).root.replace(/\\/g, '').replace(':', '');
-            const {execFile} = await import('child_process');
-            const {promisify} = await import('util');
-            const execFileAsync = promisify(execFile);
-            const {stdout} = await execFileAsync('powershell.exe', [
-                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                '-Command',
-                `(Get-PSDrive ${driveLetter}).Free`
-            ], {timeout: 5000});
-            const freeBytes = parseInt(stdout.trim(), 10);
-            if (!isNaN(freeBytes) && freeBytes < info.rawBytes * 1.05) {
-                const neededMB = Math.ceil(info.rawBytes / 1024 / 1024);
-                const freeMB  = Math.floor(freeBytes     / 1024 / 1024);
-                throw new Error(
-                    `Not enough disk space. Need ~${neededMB} MB but ` +
+        const zipPath = path.join(boardPacksDir(), info.zipFile || `${pkgId}.zip`);
+        if (!fs.existsSync(zipPath)) throw new Error(`Board pack not found: ${zipPath}`);
+
+        /* Check free disk space before starting — rawBytes is the extracted size */
+        if (info.rawBytes && process.platform === 'win32') {
+            try {
+                const driveLetter = path.parse(getInstallDir()).root.replace(/\\/g, '').replace(':', '');
+                const {execFile} = await import('child_process');
+                const {promisify} = await import('util');
+                const execFileAsync = promisify(execFile);
+                const {stdout} = await execFileAsync('powershell.exe', [
+                    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                    '-Command',
+                    `(Get-PSDrive ${driveLetter}).Free`
+                ], {timeout: 5000});
+                const freeBytes = parseInt(stdout.trim(), 10);
+                if (!isNaN(freeBytes) && freeBytes < info.rawBytes * 1.05) {
+                    const neededMB = Math.ceil(info.rawBytes / 1024 / 1024);
+                    const freeMB = Math.floor(freeBytes / 1024 / 1024);
+                    throw new Error(
+                        `Not enough disk space. Need ~${neededMB} MB but ` +
                     `only ${freeMB} MB is free on drive ${driveLetter}:`
-                );
-            }
-        } catch (spaceErr) {
-            if (spaceErr.message.startsWith('Not enough disk space')) throw spaceErr;
+                    );
+                }
+            } catch (spaceErr) {
+                if (spaceErr.message.startsWith('Not enough disk space')) throw spaceErr;
             /* PowerShell unavailable or timed out — proceed anyway */
+            }
         }
-    }
 
-    const destDir = packagesDir();
-    await fs.ensureDir(destDir);
+        const destDir = packagesDir();
+        await fs.ensureDir(destDir);
 
-    /* Probe write access. An all-users install (C:\Program Files) is read-only for the
+        /* Probe write access. An all-users install (C:\Program Files) is read-only for the
      * unelevated app — in that case we extract via a one-time UAC elevation instead of
      * failing, matching how the bundled installer extracts boards while elevated. */
-    let writable = true;
-    const testFile = path.join(destDir, `.write-test-${pkgId}`);
-    try {
-        await fs.writeFile(testFile, '');
-        await fs.remove(testFile);
-    } catch (_) {
-        writable = false;
-    }
-
-    let cancelled = false;
-    _active.set(pkgId, {cancel: () => { cancelled = true; }});
-
-    const send = payload => {
-        if (!event.sender.isDestroyed()) {
-            event.sender.send('board-manager:progress', payload);
+        let writable = true;
+        const testFile = path.join(destDir, `.write-test-${pkgId}`);
+        try {
+            await fs.writeFile(testFile, '');
+            await fs.remove(testFile);
+        } catch (_) {
+            writable = false;
         }
-    };
 
-    try {
-        if (writable) {
-            await extractZip(zipPath, destDir, {
-                isCancelled: () => cancelled,
-                onProgress: (done, total) => {
-                    const pct = total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0;
-                    send({pkgId, percent: pct});
-                }
-            });
-        } else {
+        let cancelled = false;
+        _active.set(pkgId, {cancel: () => {
+            cancelled = true;
+        }});
+
+        const send = payload => {
+            if (!event.sender.isDestroyed()) {
+                event.sender.send('board-manager:progress', payload);
+            }
+        };
+
+        try {
+            if (writable) {
+                await extractZip(zipPath, destDir, {
+                    isCancelled: () => cancelled,
+                    onProgress: (done, total) => {
+                        const pct = total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0;
+                        send({pkgId, percent: pct});
+                    }
+                });
+            } else {
             /* Program Files / all-users install — extract with a single elevation prompt.
              * (Cancel isn't supported once the elevated process is running.) */
-            send({pkgId, percent: 0});
-            await elevatedExtract(zipPath, destDir, pkgId, info.rawBytes || 0, {send});
+                send({pkgId, percent: 0});
+                await elevatedExtract(zipPath, destDir, pkgId, info.rawBytes || 0, {send});
+            }
+            _active.delete(pkgId);
+            send({pkgId, percent: 100, done: true});
+            return {pkgId, installed: true};
+        } catch (err) {
+            _active.delete(pkgId);
+            if (cancelled) {
+                await removePackageDir(pkgId);
+                send({pkgId, percent: 0, error: 'Installation cancelled.'});
+                throw new Error('Installation cancelled.');
+            }
+            send({pkgId, percent: 0, error: err.message});
+            throw new Error(err.message);
         }
-        _active.delete(pkgId);
-        send({pkgId, percent: 100, done: true});
-        return {pkgId, installed: true};
-    } catch (err) {
-        _active.delete(pkgId);
-        if (cancelled) {
-            await removePackageDir(pkgId);
-            send({pkgId, percent: 0, error: 'Installation cancelled.'});
-            throw new Error('Installation cancelled.');
-        }
-        send({pkgId, percent: 0, error: err.message});
-        throw new Error(err.message);
-    }
-});
+    });
 
-/* ── IPC: board-manager:cancel ───────────────────────────────────────────── */
-ipcMain.handle('board-manager:cancel', async (event, pkgId) => {
-    const inst = _active.get(pkgId);
-    if (inst) inst.cancel();
-    return {pkgId, cancelled: true};
-});
+    /* ── IPC: board-manager:cancel ───────────────────────────────────────────── */
+    ipcMain.handle('board-manager:cancel', async (event, pkgId) => {
+        const inst = _active.get(pkgId);
+        if (inst) inst.cancel();
+        return {pkgId, cancelled: true};
+    });
 
-/* ── IPC: board-manager:remove ───────────────────────────────────────────── */
-ipcMain.handle('board-manager:remove', async (event, pkgId) => {
-    await removePackageDir(pkgId);
-    return {pkgId, installed: false};
-});
+    /* ── IPC: board-manager:remove ───────────────────────────────────────────── */
+    ipcMain.handle('board-manager:remove', async (event, pkgId) => {
+        await removePackageDir(pkgId);
+        return {pkgId, installed: false};
+    });
 
-/* ── IPC: board-manager:is-installed ─────────────────────────────────────── */
-ipcMain.handle('board-manager:is-installed', (event, pkgId) => isInstalled(pkgId));
+    /* ── IPC: board-manager:is-installed ───────────────────────────────────── */
+    ipcMain.handle('board-manager:is-installed', (event, pkgId) => isInstalled(pkgId));
+}
