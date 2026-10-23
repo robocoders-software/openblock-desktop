@@ -99,9 +99,13 @@ jobs:
         run: Set-MpPreference -DisableRealtimeMonitoring $true
         continue-on-error: true
 
-      # --dir mode skips NSIS: the bundled makensis.exe is 32-bit and can't mmap a
-      # single embedded payload once board-pack tools push it past ~2GB. --dir just
-      # produces the unpacked app folder, which upload-artifact zips for distribution.
+      # electron-builder's bundled makensis.exe is 32-bit and can't mmap a single
+      # embedded payload once board-pack tools push it past ~2GB, so the nsis target
+      # can't be built here. electron-builder-wrapper.js's --mode=dir still passes
+      # the hardcoded 'nsis' target name alongside its --dir flag, which does NOT
+      # suppress NSIS packaging in this electron-builder version — so call
+      # electron-builder directly with the 'dir' target to actually skip NSIS and
+      # produce the unpacked app folder, which upload-artifact zips for distribution.
       - name: Build Windows app (unpacked)
         env:
           NODE_ENV: production
@@ -112,7 +116,7 @@ jobs:
           npm run clean
           npm run compile
           npm run fetch:all
-          npm run doBuild -- --mode=dir
+          npx electron-builder --win dir --x64 --c.compression=store --publish never
 
       - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
