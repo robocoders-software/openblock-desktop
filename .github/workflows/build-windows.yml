@@ -94,6 +94,11 @@ jobs:
           npm ci --omit=dev --ignore-scripts
           Pop-Location
 
+      - name: Disable Windows Defender real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+        continue-on-error: true
+
       - name: Build Windows installer
         env:
           NODE_ENV: production
