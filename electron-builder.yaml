@@ -8,7 +8,13 @@ extraFiles:
   - 'external-resources'
   - 'firmwares'
   - 'drivers'
-  - 'board-packs'
+  # Only the manifest goes inside the installer. The board zips (~2.5GB) would push the
+  # NSIS payload past its 2GB limit, so they ship in a board-packs/ folder NEXT TO the
+  # setup .exe and the installer copies them in from there (see installer.nsh).
+  - from: 'board-packs'
+    to: 'board-packs'
+    filter:
+      - 'manifest.json'
   - from: 'tools'
     to: 'tools'
     filter:

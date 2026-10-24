@@ -64,21 +64,21 @@ ${StrRep}
         ${NSD_CreateLabel} 0 30u 100% 10u "Board Family"
         Pop $0
 
-        ${NSD_CreateCheckbox} 0 42u 100% 14u "Arduino boards  —  Uno, Nano, Leonardo, Mega, UNO R4  (759 MB)"
+        ${NSD_CreateCheckbox} 0 42u 100% 14u "Arduino boards  —  Uno, Nano, Leonardo, Mega, UNO R4  (800 MB)"
         Pop $Check_Arduino
         ${NSD_Check} $Check_Arduino
 
-        ${NSD_CreateCheckbox} 0 58u 100% 14u "ESP32 boards  —  ESP32, ESP32-S3 and all variants  (3,476 MB)"
+        ${NSD_CreateCheckbox} 0 58u 100% 14u "ESP32 boards  —  ESP32, ESP32-S3 and all variants  (6,441 MB)"
         Pop $Check_ESP32
         ${NSD_Check} $Check_ESP32
 
-        ${NSD_CreateCheckbox} 0 74u 100% 14u "ESP8266 boards  —  NodeMCU, D1 Mini and variants  (338 MB)"
+        ${NSD_CreateCheckbox} 0 74u 100% 14u "ESP8266 boards  —  NodeMCU, D1 Mini and variants  (336 MB)"
         Pop $Check_ESP8266
 
-        ${NSD_CreateCheckbox} 0 90u 100% 14u "Raspberry Pi Pico boards  —  Pico, Pico W, Pico 2, Pico 2W  (1,406 MB)"
+        ${NSD_CreateCheckbox} 0 90u 100% 14u "Raspberry Pi Pico boards  —  Pico, Pico W, Pico 2, Pico 2W  (1,140 MB)"
         Pop $Check_RP2040
 
-        ${NSD_CreateCheckbox} 0 106u 100% 14u "Maixduino boards  —  Sipeed MaixDock, Maixduino K210  (149 MB)"
+        ${NSD_CreateCheckbox} 0 106u 100% 14u "Maixduino boards  —  Sipeed MaixDock, Maixduino K210  (142 MB)"
         Pop $Check_Maixduino
 
         ${NSD_CreateCheckbox} 0 122u 100% 14u "SparkFun boards  —  SparkFun AVR variants  (4 MB)"
@@ -155,12 +155,15 @@ done:
 ; fully HIDDEN and pipes any output into the installer's detail log — same as the icacls
 ; call below. -WindowStyle Hidden alone can't win the race; nsExec removes the window entirely.
 !macro _ExtractPack PkgId PkgName
-    DetailPrint "Installing ${PkgName} board support..."
-    nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$INSTDIR\board-packs\${PkgId}.zip\" -DestinationPath \"$INSTDIR\tools\Arduino\packages\" -Force"'
-    Pop $0
-    ${If} $0 != 0
-        MessageBox MB_OK|MB_ICONEXCLAMATION \
-            "Warning: Failed to install ${PkgName} board support (code $0).$\nYou can install it later from within the application."
+    ; Missing zip = board-packs folder wasn't next to the installer; already warned once above.
+    ${If} ${FileExists} "$INSTDIR\board-packs\${PkgId}.zip"
+        DetailPrint "Installing ${PkgName} board support..."
+        nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$INSTDIR\board-packs\${PkgId}.zip\" -DestinationPath \"$INSTDIR\tools\Arduino\packages\" -Force"'
+        Pop $0
+        ${If} $0 != 0
+            MessageBox MB_OK|MB_ICONEXCLAMATION \
+                "Warning: Failed to install ${PkgName} board support (code $0).$\nYou can install it later from within the application."
+        ${EndIf}
     ${EndIf}
 !macroend
 !define ExtractPack "!insertmacro _ExtractPack"
@@ -188,6 +191,24 @@ done:
             StrCpy $State_Arduino ${BST_CHECKED}
             StrCpy $State_ESP32   ${BST_CHECKED}
         ${EndIf}
+    ${EndIf}
+
+    ; The board zips are too big to embed in this .exe (NSIS's 2GB payload limit), so they ship
+    ; in a board-packs\ folder next to it. Copy ALL of them into the install folder: the selected
+    ; ones are extracted below, and the rest stay available to the in-app Board Manager, so every
+    ; board can be added later fully offline, without the original media.
+    ${If} ${FileExists} "$EXEDIR\board-packs\*.zip"
+        DetailPrint "Copying board files..."
+        CreateDirectory "$INSTDIR\board-packs"
+        ClearErrors
+        CopyFiles /SILENT "$EXEDIR\board-packs\*.zip" "$INSTDIR\board-packs"
+        ${If} ${Errors}
+            MessageBox MB_OK|MB_ICONEXCLAMATION \
+                "Warning: Some board files could not be copied (check free disk space).$\nBoards that failed can be installed later from within the application."
+        ${EndIf}
+    ${Else}
+        MessageBox MB_OK|MB_ICONEXCLAMATION \
+            "The board-packs folder was not found next to this installer.$\n$\nRoboCoders Studio will be installed WITHOUT board support. Keep the board-packs folder in the same folder as the setup file and run the installer again to add boards."
     ${EndIf}
 
     ; Visible in the installer's "Show details" log — confirms the exact selection being applied.
