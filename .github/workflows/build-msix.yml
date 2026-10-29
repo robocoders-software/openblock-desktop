@@ -99,13 +99,22 @@ jobs:
           New-Item -ItemType Directory -Force dist/msix-test | Out-Null
           Export-Certificate -Cert $cert -FilePath dist/msix-test/RoboCoders-MSIX-Test.cer | Out-Null
 
+      # Built unsigned, then signed below: electron-builder's bundled signtool (winCodeSign 2.6.0)
+      # fails on the package with "A required function is not present".
       - name: Build MSIX
         env:
           NODE_ENV: production
           NODE_OPTIONS: --max_old_space_size=8192
-          CSC_LINK: ${{ runner.temp }}\msix-test.pfx
-          CSC_KEY_PASSWORD: msix-test
         run: npx electron-builder --windows appx --x64 --publish never --config electron-builder-msix.js
+
+      - name: Sign MSIX with the Windows SDK signtool
+        shell: pwsh
+        run: |
+          $signtool = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          $appx = (Get-ChildItem dist/*.appx | Select-Object -First 1).FullName
+          Write-Host "$signtool -> $appx ($([math]::Round((Get-Item $appx).Length / 1MB)) MB)"
+          & $signtool sign /fd SHA256 /f "$env:RUNNER_TEMP\msix-test.pfx" /p msix-test $appx
+          if ($LASTEXITCODE -ne 0) { throw 'signtool failed' }
 
       - name: Assemble test folder
         shell: pwsh
