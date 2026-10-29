@@ -4,6 +4,7 @@ on:
   push:
     branches-ignore:
       - main
+      - test/msix  # has its own workflow (build-msix.yml)
     tags: ['v*']
   workflow_dispatch:
     inputs:

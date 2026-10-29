@@ -1,0 +1,141 @@
+name: Build MSIX (test)
+
+# TEST-ONLY: builds a Microsoft Store style MSIX package, signed with a throwaway self-signed
+# certificate, to check the app works from a read-only MSIX install. The real installer is
+# build-windows.yml and is unaffected.
+
+on:
+  push:
+    branches: [test/msix]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '18.x'
+  ORG: robocoders-software
+  DEPS_BRANCH: test/today-fixes  # dependency repos have no test/msix branch
+
+jobs:
+  build-msix:
+    name: Build MSIX test package
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: openblock-desktop
+
+    steps:
+      - name: Checkout openblock-desktop
+        uses: actions/checkout@v4
+        with:
+          path: openblock-desktop
+
+      - name: Checkout dependency repositories
+        shell: pwsh
+        run: |
+          $repos = @('openblock-gui', 'openblock-l10n', 'openblock-ml-studio', 'openblock-blocks', 'openblock-vm', 'openblock-link')
+          foreach ($repo in $repos) {
+            $dest = Join-Path $env:GITHUB_WORKSPACE $repo
+            git clone --depth 1 --branch $env:DEPS_BRANCH "https://github.com/${{ env.ORG }}/$repo.git" $dest
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Branch $env:DEPS_BRANCH not found for $repo, falling back to main"
+              git clone --depth 1 --branch main "https://github.com/${{ env.ORG }}/$repo.git" $dest
+              if ($LASTEXITCODE -ne 0) { throw "Failed to clone $repo" }
+            }
+          }
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: openblock-desktop/package-lock.json
+
+      - name: Prepare dependency packages
+        shell: pwsh
+        run: |
+          npm ci --prefix ../openblock-l10n
+          npm run build:data --prefix ../openblock-l10n
+          npm ci --prefix ../openblock-blocks --ignore-scripts
+          npm ci --prefix ../openblock-ml-studio --legacy-peer-deps
+          npm ci --prefix ../openblock-vm --legacy-peer-deps
+          Push-Location ../openblock-vm
+          node -e "const webpack=require('webpack');webpack(require('./webpack.config.js').slice(0,2),(err,stats)=>{if(err||stats.hasErrors()){console.error(err||stats.toString());process.exit(1)};console.log('openblock-vm web+node build OK');});"
+          Pop-Location
+          npm ci --prefix ../openblock-gui
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Overlay fixed openblock-link source
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force node_modules\openblock-link
+          Copy-Item -Recurse ..\openblock-link node_modules\openblock-link
+          Remove-Item -Recurse -Force node_modules\openblock-link\.git -ErrorAction SilentlyContinue
+          Push-Location node_modules\openblock-link
+          npm ci --omit=dev --ignore-scripts
+          Pop-Location
+
+      - name: Disable Windows Defender real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+        continue-on-error: true
+
+      # Same as `npm run dist` minus create:board-packs (the MSIX ships the AVR toolchain pre-extracted).
+      - name: Compile and fetch resources
+        env:
+          NODE_ENV: production
+          NODE_OPTIONS: --max_old_space_size=8192
+        run: npm run clean && npm run compile && npm run fetch:drivers && npm run fetch:exts && npm run fetch:firmwares && npm run fetch:tools && npm run fetch:static && npm run fetch:mobilenet && npm run fetch:speech-commands
+
+      - name: Create throwaway self-signed TEST certificate
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type Custom -Subject 'CN=RoboCodersTest' -KeyUsage DigitalSignature `
+            -FriendlyName 'RoboCoders MSIX test' -CertStoreLocation Cert:\CurrentUser\My `
+            -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
+          $pw = ConvertTo-SecureString -String 'msix-test' -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath "$env:RUNNER_TEMP\msix-test.pfx" -Password $pw | Out-Null
+          New-Item -ItemType Directory -Force dist/msix-test | Out-Null
+          Export-Certificate -Cert $cert -FilePath dist/msix-test/RoboCoders-MSIX-Test.cer | Out-Null
+
+      - name: Build MSIX
+        env:
+          NODE_ENV: production
+          NODE_OPTIONS: --max_old_space_size=8192
+          CSC_LINK: ${{ runner.temp }}\msix-test.pfx
+          CSC_KEY_PASSWORD: msix-test
+        run: npx electron-builder --windows appx --x64 --publish never --config electron-builder-msix.js
+
+      - name: Assemble test folder
+        shell: pwsh
+        run: |
+          $out = 'dist/msix-test'
+          Copy-Item dist/*.appx $out
+          Copy-Item -Recurse drivers "$out/drivers"
+          @'
+          # Run in PowerShell AS ADMINISTRATOR, from this folder:
+          #   powershell -ExecutionPolicy Bypass -File .\Install-Test.ps1
+          # 1) Trusts the TEST certificate (Local Machine > Trusted People) so Windows accepts the package.
+          #    A Store-published package needs no such step: Microsoft signs it.
+          # 2) Installs the MSIX.
+          Import-Certificate -FilePath "$PSScriptRoot\RoboCoders-MSIX-Test.cer" -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+          Add-AppxPackage -Path (Get-ChildItem "$PSScriptRoot\*.appx" | Select-Object -First 1).FullName
+          Write-Host 'Installed. Find "RoboCoders Studio (MSIX test)" in the Start menu.'
+          '@ | Set-Content "$out/Install-Test.ps1"
+          @'
+          # Run in PowerShell AS ADMINISTRATOR to remove the test app and its test certificate.
+          Get-AppxPackage RoboCoders.MSIXTest | Remove-AppxPackage
+          Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -eq 'CN=RoboCodersTest' | Remove-Item
+          Write-Host 'Removed.'
+          '@ | Set-Content "$out/Uninstall-Test.ps1"
+          Get-ChildItem -Recurse $out -File | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Upload MSIX test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoboCoders-MSIX-Test-${{ github.run_id }}
+          path: openblock-desktop/dist/msix-test/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
